@@ -140,9 +140,7 @@ async function publish(args: {
   if (!createRes.ok) throw new Error(`Publish failed: ${JSON.stringify(createRes.data)}`);
   const resource = createRes.data;
 
-  // Step 2 + 3: Agent wallet signs the x402 payment for verification.
-  // wrapFetchWithPayment intercepts the 402, signs a Soroban USDC auth entry
-  // using the agent's Ed25519 key, and retries with the payment header.
+  // Step 2: Agent wallet signs the x402 payment for verification.
   const paidFetch = makePaidFetch(wallet);
 
   const verifyRes = await paidFetch(`${BASE_URL}/verify-content`, {
@@ -166,15 +164,37 @@ async function publish(args: {
   const isOriginal: boolean = verifyData?.isOriginal ?? false;
   const flags: string[] = verifyData?.flags ?? [];
 
+  if (!isOriginal) {
+    return [
+      `Resource created but rejected by verification.`,
+      `ID: ${resource.id}`,
+      `Verification: rejected ✗`,
+      flags.length ? `Flags: ${flags.join("; ")}` : null,
+    ].filter(Boolean).join("\n");
+  }
+
+  // Step 3: Trigger on-chain registration (best-effort — failure doesn't block listing)
+  const registerRes = await jsonFetch(`${BASE_URL}/resources/${resource.id}/register`, {
+    method: "POST",
+    headers: { "x-api-key": agentApiKey },
+  });
+
+  const onchainStatus: string = registerRes.ok
+    ? (registerRes.data.onchainStatus ?? "registered")
+    : "failed";
+  const onchainTxHash: string | null = registerRes.ok
+    ? (registerRes.data.onchainTxHash ?? null)
+    : null;
+
   return [
     `Resource published.`,
     `ID: ${resource.id}`,
     `Access URL: ${resource.accessUrl}`,
-    `Verification: ${isOriginal ? "approved ✓" : "rejected ✗"}`,
-    flags.length ? `Flags: ${flags.join("; ")}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    `Verification: approved ✓`,
+    `On-chain status: ${onchainStatus}`,
+    onchainTxHash ? `On-chain tx: ${onchainTxHash}` : null,
+    !registerRes.ok ? `(Registration failed — resource is still listed and purchasable. Retry with mindvault_register_onchain.)` : null,
+  ].filter(Boolean).join("\n");
 }
 
 async function buy(resourceId: string): Promise<string> {

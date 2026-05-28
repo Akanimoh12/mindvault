@@ -256,6 +256,7 @@ router.get("/resources/:id/register/prepare", apiKeyAuth, async (req, res) => {
 });
 
 // POST /resources/:id/register — register a verified resource on-chain (owner only)
+// Can be called again to retry if onchainStatus is "failed".
 router.post("/resources/:id/register", apiKeyAuth, async (req, res) => {
   const publisher = req.publisher!;
   const resourceId = req.params.id as string;
@@ -274,9 +275,18 @@ router.post("/resources/:id/register", apiKeyAuth, async (req, res) => {
     return;
   }
   if (resource.onchainStatus === "registered") {
-    res.status(409).json({ error: "Resource is already registered on-chain" });
+    res.status(409).json({
+      error: "Resource is already registered on-chain",
+      onchainTxHash: resource.onchainTxHash,
+    });
     return;
   }
+  // "pending" means a registration is already in-flight — don't double-submit
+  if (resource.onchainStatus === "pending") {
+    res.status(409).json({ error: "Registration already in progress" });
+    return;
+  }
+  // "none" or "failed" → proceed (failed is retryable)
 
   // Check if signedXdr is provided (new flow) or use legacy flow
   const parsed = z.object({ signedXdr: z.string().optional() }).safeParse(req.body);
@@ -341,8 +351,13 @@ router.post("/resources/:id/register", apiKeyAuth, async (req, res) => {
       res.json({ id: updated.id, onchainStatus: updated.onchainStatus });
     }
   } catch (err: any) {
+    // Mark failed but do NOT touch `listed` — resource stays available for purchase
     await db.update(resources).set({ onchainStatus: "failed" }).where(eq(resources.id, resourceId));
-    res.status(502).json({ error: "On-chain registration failed", detail: err?.message });
+    res.status(502).json({
+      error: "On-chain registration failed",
+      detail: err?.message,
+      retryable: true,
+    });
   }
 });
 

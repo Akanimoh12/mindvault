@@ -62,14 +62,13 @@ router.post("/verify-content", verifyPaywall, async (req, res) => {
       })
       .returning();
 
-    // Update resource status
+    // Update resource status — listing is independent of on-chain registration
     await db
       .update(resources)
       .set({
         verificationStatus: result.isOriginal ? "verified" : "rejected",
         verificationId: verification.id,
         listed: result.isOriginal,
-        ...(result.isOriginal && { onchainStatus: "pending" }),
       })
       .where(eq(resources.id, resourceId));
   }
