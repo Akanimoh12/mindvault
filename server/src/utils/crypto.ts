@@ -22,10 +22,7 @@ export function calculateContentHash(buffer: Buffer): string {
  * hash changes if the title changes even when the bytes are identical.
  */
 export function hashFileResource(buffer: Buffer, title: string): string {
-  return createHash("sha256")
-    .update(Buffer.from(title, "utf8"))
-    .update(buffer)
-    .digest("hex");
+  return createHash("sha256").update(Buffer.from(title, "utf8")).update(buffer).digest("hex");
 }
 
 /**
@@ -35,19 +32,14 @@ export function hashFileResource(buffer: Buffer, title: string): string {
  */
 export function hashLinkResource(url: string, title: string): string {
   const normalized = normalizeUrl(url);
-  return createHash("sha256")
-    .update(normalized)
-    .update(Buffer.from(title, "utf8"))
-    .digest("hex");
+  return createHash("sha256").update(normalized).update(Buffer.from(title, "utf8")).digest("hex");
 }
 
 function normalizeUrl(raw: string): string {
   const u = new URL(raw);
   u.hostname = u.hostname.toLowerCase();
   u.pathname = u.pathname.replace(/\/+$/, "") || "/";
-  const sorted = Array.from(u.searchParams.entries()).sort(([a], [b]) =>
-    a.localeCompare(b)
-  );
+  const sorted = Array.from(u.searchParams.entries()).sort(([a], [b]) => a.localeCompare(b));
   u.search = "";
   sorted.forEach(([k, v]) => u.searchParams.append(k, v));
   return u.toString();

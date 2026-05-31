@@ -1,8 +1,5 @@
 import { Router, type Router as RouterType } from "express";
-import {
-  probeDatabase,
-  probeSorobanRpc,
-} from "../lib/probes.js";
+import { probeDatabase, probeSorobanRpc } from "../lib/probes.js";
 import { overallReadinessStatus } from "../lib/readiness.js";
 
 const router: RouterType = Router();
@@ -16,10 +13,7 @@ router.get("/health", (_req, res) => {
 });
 
 router.get("/health/ready", async (_req, res) => {
-  const [database, sorobanRpc] = await Promise.all([
-    probeDatabase(),
-    probeSorobanRpc(),
-  ]);
+  const [database, sorobanRpc] = await Promise.all([probeDatabase(), probeSorobanRpc()]);
 
   const checks = { database, sorobanRpc };
   const status = overallReadinessStatus(checks);

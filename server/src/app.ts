@@ -1,5 +1,7 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { corsMiddleware } from "./cors.js";
+import { getLogger } from "./lib/logger.js";
+import { requestContextMiddleware } from "./middleware/requestContext.js";
 import healthRouter from "./routes/health.js";
 import publisherRouter from "./routes/publishers.js";
 import registryRouter from "./routes/registry.js";
@@ -10,6 +12,7 @@ export function createApp(): Express {
   const app = express();
 
   app.use(corsMiddleware());
+  app.use(requestContextMiddleware);
   app.use(express.json());
 
   // Routes
@@ -21,7 +24,7 @@ export function createApp(): Express {
 
   // Global error handler
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("Unhandled error:", err);
+    getLogger().error({ err, event: "unhandled_error" }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });
   });
 

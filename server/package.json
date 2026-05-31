@@ -43,6 +43,7 @@
     "express-rate-limit": "^8.5.2",
     "multer": "^2.1.1",
     "openai": "^6.33.0",
+    "pino": "^9.6.0",
     "postgres": "^3.4.9",
     "x402-stellar": "^0.2.0",
     "zod": "^4.3.6"

@@ -1,11 +1,4 @@
-import {
-  pgTable,
-  text,
-  real,
-  boolean,
-  timestamp,
-  pgEnum,
-} from "drizzle-orm/pg-core";
+import { pgTable, text, real, boolean, timestamp, pgEnum } from "drizzle-orm/pg-core";
 import { createId } from "@paralleldrive/cuid2";
 
 export const resourceTypeEnum = pgEnum("resource_type", ["file", "link"]);
@@ -53,9 +46,7 @@ export const resources = pgTable("resources", {
   contentHash: text("content_hash"), // SHA-256 of canonical content (URL for links, file bytes for files)
   externalUrl: text("external_url"), // For type "link"
   mimeType: text("mime_type"),
-  verificationStatus: verificationStatusEnum("verification_status")
-    .notNull()
-    .default("pending"),
+  verificationStatus: verificationStatusEnum("verification_status").notNull().default("pending"),
   verificationId: text("verification_id"),
   listed: boolean("listed").notNull().default(false),
   onchainStatus: onchainStatusEnum("onchain_status").notNull().default("none"),

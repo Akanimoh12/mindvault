@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  parseAllowedOrigins,
-  X402_ALLOWED_HEADERS,
-  X402_EXPOSED_HEADERS,
-} from "./cors.js";
+import { parseAllowedOrigins, X402_ALLOWED_HEADERS, X402_EXPOSED_HEADERS } from "./cors.js";
 
 vi.mock("./config.js", () => ({
   config: {
@@ -16,7 +12,7 @@ vi.mock("./config.js", () => ({
 describe("parseAllowedOrigins", () => {
   it("splits a comma-separated list", () => {
     expect(
-      parseAllowedOrigins("https://app.example.com, http://localhost:5173", "fallback")
+      parseAllowedOrigins("https://app.example.com, http://localhost:5173", "fallback"),
     ).toEqual(["https://app.example.com", "http://localhost:5173"]);
   });
 
@@ -47,7 +43,7 @@ describe("createCorsOptions", () => {
     const options = createCorsOptions();
     const origin = options.origin as (
       origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void
+      callback: (err: Error | null, allow?: boolean) => void,
     ) => void;
 
     await new Promise<void>((resolve) => {

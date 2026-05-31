@@ -1,9 +1,5 @@
 import React from "react";
-import {
-  explorerTxUrl,
-  explorerAccountUrl,
-  explorerContractUrl,
-} from "../lib/stellarExplorer.js";
+import { explorerTxUrl, explorerAccountUrl, explorerContractUrl } from "../lib/stellarExplorer.js";
 
 interface Props {
   type: "tx" | "account" | "contract";

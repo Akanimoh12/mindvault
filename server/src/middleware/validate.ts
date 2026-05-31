@@ -15,10 +15,8 @@ export function validate<T extends z.ZodType>(schema: T): RequestHandler {
 
 export function validateFields<T extends z.ZodType>(
   schema: T,
-  source: Record<string, unknown>
-):
-  | { success: true; data: z.infer<T> }
-  | { success: false; error: z.ZodError } {
+  source: Record<string, unknown>,
+): { success: true; data: z.infer<T> } | { success: false; error: z.ZodError } {
   const parsed = schema.safeParse(source);
   if (!parsed.success) {
     return { success: false, error: parsed.error };

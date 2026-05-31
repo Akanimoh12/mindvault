@@ -6,6 +6,7 @@ export const X402_ALLOWED_HEADERS = [
   "Content-Type",
   "Authorization",
   "x-api-key",
+  "x-request-id",
   "PAYMENT-SIGNATURE",
   "X-Payment",
 ] as const;
@@ -15,6 +16,7 @@ export const X402_EXPOSED_HEADERS = [
   "PAYMENT-REQUIRED",
   "PAYMENT-RESPONSE",
   "X-PAYMENT-RESPONSE",
+  "x-request-id",
   "X-Payment-Id",
   "X-Payment-Amount",
   "X-Payment-Recipient",

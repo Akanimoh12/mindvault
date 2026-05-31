@@ -38,7 +38,7 @@ export function RegisterModal({ resourceId, apiKey, onClose, onConfirmed }: Regi
   async function signAndSubmit() {
     try {
       setState("submitting");
-      
+
       // Check if Freighter is available
       if (!window.freighterApi) {
         throw new Error("Freighter wallet not found. Please install Freighter extension.");
@@ -62,8 +62,8 @@ export function RegisterModal({ resourceId, apiKey, onClose, onConfirmed }: Regi
 
   function getExplorerUrl(hash: string): string {
     const isTestnet = networkPassphrase.includes("Test");
-    const baseUrl = isTestnet 
-      ? "https://stellar.expert/explorer/testnet" 
+    const baseUrl = isTestnet
+      ? "https://stellar.expert/explorer/testnet"
       : "https://stellar.expert/explorer/public";
     return `${baseUrl}/tx/${hash}`;
   }
@@ -99,7 +99,8 @@ export function RegisterModal({ resourceId, apiKey, onClose, onConfirmed }: Regi
                 <span className="text-sm text-gray-900">Ready to sign transaction</span>
               </div>
               <p className="text-sm text-gray-600">
-                Click "Sign & Submit" to open your Freighter wallet and sign the registration transaction.
+                Click "Sign & Submit" to open your Freighter wallet and sign the registration
+                transaction.
               </p>
             </div>
           )}
@@ -136,7 +137,12 @@ export function RegisterModal({ resourceId, apiKey, onClose, onConfirmed }: Regi
                 >
                   View on Stellar Explorer
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                    />
                   </svg>
                 </a>
               )}
@@ -165,7 +171,7 @@ export function RegisterModal({ resourceId, apiKey, onClose, onConfirmed }: Regi
               Sign & Submit
             </button>
           )}
-          
+
           {state === "failed" && (
             <button
               onClick={prepareTransaction}

@@ -214,9 +214,7 @@ async function reconcile(): Promise<ReconciliationSummary> {
 
     const dbStroops = usdcStringToStroops(row.price);
     if (onChain.price !== dbStroops) {
-      problems.push(
-        `price db=${row.price} chain=${stroopsToUsdcString(onChain.price)}`
-      );
+      problems.push(`price db=${row.price} chain=${stroopsToUsdcString(onChain.price)}`);
       summary.mismatches.push({
         resourceId: row.id,
         dbPrice: row.price,
@@ -261,7 +259,7 @@ async function reconcile(): Promise<ReconciliationSummary> {
     process.stderr.write(
       `Warning: could not read on-chain count for orphan check: ${
         err instanceof Error ? err.message : String(err)
-      }\n`
+      }\n`,
     );
   }
 
@@ -271,9 +269,7 @@ async function reconcile(): Promise<ReconciliationSummary> {
   const listedNotRegistered = await db
     .select()
     .from(resources)
-    .where(
-      and(eq(resources.listed, true), ne(resources.onchainStatus, "registered"))
-    );
+    .where(and(eq(resources.listed, true), ne(resources.onchainStatus, "registered")));
 
   for (const row of listedNotRegistered) {
     summary.listingDrift.push({
@@ -294,7 +290,7 @@ async function main(): Promise<void> {
     summary = await reconcile();
   } catch (err) {
     process.stderr.write(
-      `Reconciliation failed: ${err instanceof Error ? err.message : String(err)}\n`
+      `Reconciliation failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     process.exit(2);
   }

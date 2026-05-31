@@ -7,7 +7,7 @@ describe("overallReadinessStatus", () => {
       overallReadinessStatus({
         database: { status: "ok", latencyMs: 1 },
         sorobanRpc: { status: "ok", latencyMs: 2 },
-      })
+      }),
     ).toBe("ok");
   });
 
@@ -20,7 +20,7 @@ describe("overallReadinessStatus", () => {
           latencyMs: 2,
           error: "timeout",
         },
-      })
+      }),
     ).toBe("error");
   });
 });

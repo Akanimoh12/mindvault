@@ -35,7 +35,10 @@ export default function App() {
     if (API_KEY) {
       fetchMyResources(API_KEY).then(setResources).catch(console.error);
     } else {
-      fetch("/resources").then((r) => r.json()).then(setResources).catch(console.error);
+      fetch("/resources")
+        .then((r) => r.json())
+        .then(setResources)
+        .catch(console.error);
     }
 
     fetchRegistryStatus()
@@ -50,14 +53,14 @@ export default function App() {
 
   function handleOwnershipConfirmed(id: string, newCreator: string) {
     setResources((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, walletAddress: newCreator } : r))
+      prev.map((r) => (r.id === id ? { ...r, walletAddress: newCreator } : r)),
     );
     setActiveModal(null);
   }
 
   function handleRegistrationConfirmed(id: string, txHash: string) {
     setResources((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, onchainStatus: "registered" } : r))
+      prev.map((r) => (r.id === id ? { ...r, onchainStatus: "registered" } : r)),
     );
     setActiveModal(null);
   }
@@ -71,8 +74,7 @@ export default function App() {
         <h1 className="text-2xl font-bold text-gray-900">MindVault</h1>
         {registryCount !== null && (
           <p className="text-sm text-gray-500">
-            Registry:{" "}
-            <span className="font-semibold text-indigo-600">{registryCount}</span>{" "}
+            Registry: <span className="font-semibold text-indigo-600">{registryCount}</span>{" "}
             resource{registryCount !== 1 ? "s" : ""} registered on-chain
           </p>
         )}
@@ -81,7 +83,8 @@ export default function App() {
       {API_KEY && resources.some(needsRegistration) && (
         <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-medium text-amber-800">
-            {resources.filter(needsRegistration).length} resource(s) verified but not yet registered on-chain.
+            {resources.filter(needsRegistration).length} resource(s) verified but not yet registered
+            on-chain.
           </p>
         </div>
       )}
@@ -90,9 +93,7 @@ export default function App() {
         {resources.map((r) => (
           <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
             <p className="font-semibold text-gray-900">{r.title}</p>
-            {r.publisherName && (
-              <p className="mt-1 text-sm text-gray-500">by {r.publisherName}</p>
-            )}
+            {r.publisherName && <p className="mt-1 text-sm text-gray-500">by {r.publisherName}</p>}
             <p className="mt-1 truncate text-xs text-gray-400" title={r.walletAddress}>
               Owner:{" "}
               <ExplorerLink type="account" value={r.walletAddress} className="text-gray-500">
@@ -101,24 +102,28 @@ export default function App() {
             </p>
 
             <div className="mt-2 flex flex-wrap gap-1">
-              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                r.verificationStatus === "verified"
-                  ? "bg-green-100 text-green-700"
-                  : r.verificationStatus === "rejected"
-                  ? "bg-red-100 text-red-700"
-                  : "bg-gray-100 text-gray-600"
-              }`}>
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                  r.verificationStatus === "verified"
+                    ? "bg-green-100 text-green-700"
+                    : r.verificationStatus === "rejected"
+                      ? "bg-red-100 text-red-700"
+                      : "bg-gray-100 text-gray-600"
+                }`}
+              >
                 {r.verificationStatus}
               </span>
-              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                r.onchainStatus === "registered"
-                  ? "bg-indigo-100 text-indigo-700"
-                  : r.onchainStatus === "failed"
-                  ? "bg-red-100 text-red-700"
-                  : r.onchainStatus === "pending"
-                  ? "bg-yellow-100 text-yellow-700"
-                  : "bg-gray-100 text-gray-500"
-              }`}>
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                  r.onchainStatus === "registered"
+                    ? "bg-indigo-100 text-indigo-700"
+                    : r.onchainStatus === "failed"
+                      ? "bg-red-100 text-red-700"
+                      : r.onchainStatus === "pending"
+                        ? "bg-yellow-100 text-yellow-700"
+                        : "bg-gray-100 text-gray-500"
+                }`}
+              >
                 {r.onchainStatus === "none" ? "not on-chain" : r.onchainStatus}
               </span>
               {r.onchainStatus === "registered" && r.onchainTxHash && (
@@ -191,9 +196,7 @@ export default function App() {
           resourceId={activeModal.resource.id}
           apiKey={API_KEY}
           onClose={() => setActiveModal(null)}
-          onConfirmed={(txHash) =>
-            handleRegistrationConfirmed(activeModal.resource.id, txHash)
-          }
+          onConfirmed={(txHash) => handleRegistrationConfirmed(activeModal.resource.id, txHash)}
         />
       )}
     </div>

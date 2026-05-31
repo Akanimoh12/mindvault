@@ -15,7 +15,7 @@ export async function fetchMyResources(apiKey: string): Promise<any[]> {
 
 export async function prepareRegister(
   resourceId: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ unsignedXdr: string; networkPassphrase: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/register/prepare`, {
     method: "POST",
@@ -34,7 +34,7 @@ export async function prepareRegister(
 export async function submitRegister(
   resourceId: string,
   signedXdr: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ id: string; onchainStatus: string; onchainTxHash?: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/register`, {
     method: "POST",
@@ -51,7 +51,10 @@ export async function submitRegister(
   return res.json();
 }
 
-export async function prepareRegisterTx(resourceId: string, apiKey: string): Promise<{
+export async function prepareRegisterTx(
+  resourceId: string,
+  apiKey: string,
+): Promise<{
   unsignedXdr: string;
   networkPassphrase: string;
   metadata: {
@@ -75,7 +78,7 @@ export async function prepareRegisterTx(resourceId: string, apiKey: string): Pro
 export async function submitRegisterTx(
   resourceId: string,
   signedXdr: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ id: string; onchainStatus: string; txHash: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/register`, {
     method: "POST",
@@ -95,7 +98,7 @@ export async function submitRegisterTx(
 export async function prepareSetPrice(
   resourceId: string,
   price: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ unsignedXdr: string; networkPassphrase: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/price/prepare`, {
     method: "POST",
@@ -121,19 +124,16 @@ export async function fetchRegistryStatus(): Promise<{ resourceCount: number }> 
 export async function prepareTransferOwnership(
   resourceId: string,
   newCreator: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ unsignedXdr: string; networkPassphrase: string }> {
-  const res = await fetch(
-    `${API_BASE}/resources/${resourceId}/ownership/prepare`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-      },
-      body: JSON.stringify({ newCreator }),
-    }
-  );
+  const res = await fetch(`${API_BASE}/resources/${resourceId}/ownership/prepare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+    },
+    body: JSON.stringify({ newCreator }),
+  });
   if (!res.ok) {
     const { error } = await res.json();
     throw new Error(error ?? "Failed to prepare transfer transaction");
@@ -145,7 +145,7 @@ export async function submitTransferOwnership(
   resourceId: string,
   signedXdr: string,
   newCreator: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ id: string; newCreator: string; status: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/ownership`, {
     method: "POST",
@@ -166,7 +166,7 @@ export async function submitSetPrice(
   resourceId: string,
   signedXdr: string,
   price: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<{ id: string; price: string; status: string }> {
   const res = await fetch(`${API_BASE}/resources/${resourceId}/price`, {
     method: "POST",

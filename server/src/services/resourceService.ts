@@ -30,12 +30,7 @@ export async function createFileResource(data: {
     })
     .returning();
 
-  const storagePath = await uploadFile(
-    resource.id,
-    data.fileBuffer,
-    data.filename,
-    data.mimeType
-  );
+  const storagePath = await uploadFile(resource.id, data.fileBuffer, data.filename, data.mimeType);
 
   const [updated] = await db
     .update(resources)

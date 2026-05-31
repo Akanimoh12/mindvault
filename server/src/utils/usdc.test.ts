@@ -60,9 +60,7 @@ describe("stroopsToUsdc", () => {
     const cases = ["0.50", "1", "0.0000001", "100.0000001", "0.1234567"];
     for (const c of cases) {
       expect(stroopsToUsdc(usdcToStroops(c))).toBe(
-        c.includes(".")
-          ? `${BigInt(c.split(".")[0])}.${c.split(".")[1].replace(/0+$/, "")}`
-          : c
+        c.includes(".") ? `${BigInt(c.split(".")[0])}.${c.split(".")[1].replace(/0+$/, "")}` : c,
       );
     }
   });

@@ -110,7 +110,14 @@ async function seedResources(publisherId: string, onchain: boolean) {
   }
 }
 
-async function registerOnChain(resource: { id: string; title: string; description: string | null; price: string; contentHash: string | null; mimeType: string | null }) {
+async function registerOnChain(resource: {
+  id: string;
+  title: string;
+  description: string | null;
+  price: string;
+  contentHash: string | null;
+  mimeType: string | null;
+}) {
   try {
     const metadata = JSON.stringify({
       title: resource.title,

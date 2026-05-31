@@ -11,21 +11,17 @@ describe("hashFileResource (issue #12)", () => {
   });
 
   it("is stable — same input always yields same hash", () => {
-    expect(hashFileResource(BUF_HELLO, "My Title")).toBe(
-      hashFileResource(BUF_HELLO2, "My Title")
-    );
+    expect(hashFileResource(BUF_HELLO, "My Title")).toBe(hashFileResource(BUF_HELLO2, "My Title"));
   });
 
   it("changes when file bytes change", () => {
     expect(hashFileResource(Buffer.from("a"), "Same Title")).not.toBe(
-      hashFileResource(Buffer.from("b"), "Same Title")
+      hashFileResource(Buffer.from("b"), "Same Title"),
     );
   });
 
   it("changes when title changes (same bytes)", () => {
-    expect(hashFileResource(BUF_HELLO, "Title A")).not.toBe(
-      hashFileResource(BUF_HELLO, "Title B")
-    );
+    expect(hashFileResource(BUF_HELLO, "Title A")).not.toBe(hashFileResource(BUF_HELLO, "Title B"));
   });
 
   it("handles an empty buffer", () => {
@@ -48,31 +44,29 @@ describe("hashLinkResource (issue #13)", () => {
 
   it("normalizes trailing slash on pathname", () => {
     expect(hashLinkResource("https://example.com/path/", title)).toBe(
-      hashLinkResource("https://example.com/path", title)
+      hashLinkResource("https://example.com/path", title),
     );
   });
 
   it("normalizes hostname to lowercase", () => {
     expect(hashLinkResource("https://EXAMPLE.COM/path", title)).toBe(
-      hashLinkResource("https://example.com/path", title)
+      hashLinkResource("https://example.com/path", title),
     );
   });
 
   it("normalizes query parameter order", () => {
-    expect(
-      hashLinkResource("https://example.com/?b=2&a=1", title)
-    ).toBe(hashLinkResource("https://example.com/?a=1&b=2", title));
+    expect(hashLinkResource("https://example.com/?b=2&a=1", title)).toBe(
+      hashLinkResource("https://example.com/?a=1&b=2", title),
+    );
   });
 
   it("changes when URL changes", () => {
     expect(hashLinkResource("https://a.com", title)).not.toBe(
-      hashLinkResource("https://b.com", title)
+      hashLinkResource("https://b.com", title),
     );
   });
 
   it("changes when title changes", () => {
-    expect(hashLinkResource(url, "Title A")).not.toBe(
-      hashLinkResource(url, "Title B")
-    );
+    expect(hashLinkResource(url, "Title A")).not.toBe(hashLinkResource(url, "Title B"));
   });
 });

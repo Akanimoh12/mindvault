@@ -2,10 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod/v4";
 import { validate } from "./middleware/validate.js";
-import {
-  publisherRegisterSchema,
-  verifyContentSchema,
-} from "./schemas/requests.js";
+import { publisherRegisterSchema, verifyContentSchema } from "./schemas/requests.js";
 
 function mockResponse() {
   const res = {
@@ -42,7 +39,7 @@ describe("validate middleware", () => {
         error: expect.objectContaining({
           _errors: expect.any(Array),
         }),
-      })
+      }),
     );
   });
 
@@ -62,9 +59,7 @@ describe("validate middleware", () => {
 
 describe("request schemas", () => {
   it("accepts verify-content payloads", () => {
-    expect(
-      verifyContentSchema.safeParse({ content: "sample text" }).success
-    ).toBe(true);
+    expect(verifyContentSchema.safeParse({ content: "sample text" }).success).toBe(true);
   });
 
   it("rejects empty verify-content payloads", () => {

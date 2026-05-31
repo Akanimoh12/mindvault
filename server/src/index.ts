@@ -1,10 +1,17 @@
 import { config } from "./config.js";
 import { createApp } from "./app.js";
+import { rootLogger } from "./lib/logger.js";
 
 const app = createApp();
 
 app.listen(config.PORT, () => {
-  console.log(`MindVault server running on port ${config.PORT}`);
-  console.log(`Network: ${config.NETWORK}`);
-  console.log(`Health: http://localhost:${config.PORT}/health`);
+  rootLogger.info(
+    {
+      event: "server_start",
+      port: config.PORT,
+      network: config.NETWORK,
+      healthUrl: `http://localhost:${config.PORT}/health`,
+    },
+    "MindVault server started",
+  );
 });

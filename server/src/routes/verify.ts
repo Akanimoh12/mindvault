@@ -1,35 +1,17 @@
 import { Router, type Router as RouterType } from "express";
-import {
-  paymentMiddleware,
-  x402ResourceServer,
-} from "@x402/express";
-import { HTTPFacilitatorClient } from "@x402/core/server";
-import { ExactStellarScheme } from "@x402/stellar/exact/server";
-import type { Network } from "@x402/core/types";
+import { paymentMiddleware } from "@x402/express";
 import type { RoutesConfig } from "@x402/core/server";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
 import { config } from "../config.js";
-import {
-  verifyIpRateLimit,
-  verifyWalletRateLimit,
-} from "../middleware/rateLimiters.js";
+import { network, sharedX402ResourceServer } from "../lib/x402.js";
+import { verifyIpRateLimit, verifyWalletRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
 import { verifyContentSchema } from "../schemas/requests.js";
 
 const router: RouterType = Router();
-const network = config.NETWORK as Network;
-
-const facilitatorClient = new HTTPFacilitatorClient({
-  url: config.FACILITATOR_URL,
-});
-
-const resourceServer = new x402ResourceServer(facilitatorClient).register(
-  network,
-  new ExactStellarScheme()
-);
 
 const verifyRoutes: RoutesConfig = {
   "POST /verify-content": {
@@ -43,7 +25,7 @@ const verifyRoutes: RoutesConfig = {
   },
 };
 
-const verifyPaywall = paymentMiddleware(verifyRoutes, resourceServer);
+const verifyPaywall = paymentMiddleware(verifyRoutes, sharedX402ResourceServer);
 
 // POST /verify-content — AI originality check (x402 paywalled)
 router.post(
@@ -53,35 +35,35 @@ router.post(
   verifyWalletRateLimit,
   validate(verifyContentSchema),
   async (req, res) => {
-  const { content, resourceId } = req.body;
+    const { content, resourceId } = req.body;
 
-  const result = await checkOriginality(content, "text");
+    const result = await checkOriginality(content, "text");
 
-  // If a resourceId is provided, save the verification result
-  if (resourceId) {
-    const [verification] = await db
-      .insert(verifications)
-      .values({
-        resourceId,
-        isOriginal: result.isOriginal,
-        confidence: result.confidence,
-        flags: JSON.stringify(result.flags),
-      })
-      .returning();
+    // If a resourceId is provided, save the verification result
+    if (resourceId) {
+      const [verification] = await db
+        .insert(verifications)
+        .values({
+          resourceId,
+          isOriginal: result.isOriginal,
+          confidence: result.confidence,
+          flags: JSON.stringify(result.flags),
+        })
+        .returning();
 
-    // Update resource status — listing is independent of on-chain registration
-    await db
-      .update(resources)
-      .set({
-        verificationStatus: result.isOriginal ? "verified" : "rejected",
-        verificationId: verification.id,
-        listed: result.isOriginal,
-      })
-      .where(eq(resources.id, resourceId));
-  }
+      // Update resource status — listing is independent of on-chain registration
+      await db
+        .update(resources)
+        .set({
+          verificationStatus: result.isOriginal ? "verified" : "rejected",
+          verificationId: verification.id,
+          listed: result.isOriginal,
+        })
+        .where(eq(resources.id, resourceId));
+    }
 
-  res.json(result);
-  }
+    res.json(result);
+  },
 );
 
 // GET /agent/status — public agent stats
@@ -116,7 +98,7 @@ router.get("/agent/status", async (_req, res) => {
         flags: v.flags ? JSON.parse(v.flags) : [],
         checkedAt: v.checkedAt,
       };
-    })
+    }),
   );
 
   const totalVerifications = allVerifications.length;
@@ -126,8 +108,7 @@ router.get("/agent/status", async (_req, res) => {
   const totalEarned = totalVerifications * pricePerVerification;
   const avgConfidence =
     totalVerifications > 0
-      ? allVerifications.reduce((sum, v) => sum + v.confidence, 0) /
-        totalVerifications
+      ? allVerifications.reduce((sum, v) => sum + v.confidence, 0) / totalVerifications
       : 0;
 
   res.json({

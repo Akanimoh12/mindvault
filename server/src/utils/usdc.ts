@@ -13,9 +13,7 @@ export function usdcToStroops(amount: string): bigint {
   const [whole = "0", fraction = ""] = amount.split(".");
 
   if (fraction.length > USDC_DECIMALS) {
-    throw new Error(
-      `Too many decimal places in "${amount}": max ${USDC_DECIMALS}`
-    );
+    throw new Error(`Too many decimal places in "${amount}": max ${USDC_DECIMALS}`);
   }
 
   const paddedFraction = fraction.padEnd(USDC_DECIMALS, "0");
@@ -36,7 +34,5 @@ export function stroopsToUsdc(stroops: bigint): string {
 
   const fractionStr = fraction.toString().padStart(USDC_DECIMALS, "0").replace(/0+$/, "");
 
-  return fractionStr.length > 0
-    ? `${whole}.${fractionStr}`
-    : `${whole}`;
+  return fractionStr.length > 0 ? `${whole}.${fractionStr}` : `${whole}`;
 }

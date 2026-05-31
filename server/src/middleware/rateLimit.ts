@@ -1,12 +1,7 @@
 import rateLimit, { type Options } from "express-rate-limit";
 import type { Request, Response } from "express";
 
-function rateLimitHandler(
-  _req: Request,
-  res: Response,
-  _next: () => void,
-  options: Options
-): void {
+function rateLimitHandler(_req: Request, res: Response, _next: () => void, options: Options): void {
   const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
   res.setHeader("Retry-After", String(retryAfterSeconds));
   res.status(429).json({
@@ -33,7 +28,7 @@ export function createIpRateLimiter(max: number, windowMs: number) {
 export function createWalletRateLimiter(
   max: number,
   windowMs: number,
-  getWallet: (req: Request) => string | undefined
+  getWallet: (req: Request) => string | undefined,
 ) {
   return rateLimit({
     windowMs,
@@ -54,11 +49,7 @@ export function extractPayerFromPaymentHeader(req: Request): string | undefined 
 
   try {
     const decoded = JSON.parse(Buffer.from(header, "base64").toString());
-    return (
-      decoded?.payload?.authorization?.address ??
-      decoded?.clientAddress ??
-      undefined
-    );
+    return decoded?.payload?.authorization?.address ?? decoded?.clientAddress ?? undefined;
   } catch {
     return undefined;
   }
