@@ -30,6 +30,8 @@ reads the canonical resource entry here.
 
 `price` is an `i128` in USDC stroops (7 decimals — `1_000_000` = 0.10 USDC).
 `id` is the resource's cuid2 string, matching the server's resource IDs.
+`metadata` is a pointer string (IPFS URI, content hash, or compact JSON anchor), max
+512 bytes (`MetadataTooLong` if exceeded).
 `listed` is a boolean indicating whether the resource is available for discovery and purchase.
 
 ### Develop

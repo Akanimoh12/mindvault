@@ -238,6 +238,55 @@ fn list_returns_all_in_insertion_order() {
     assert_eq!(page.get(2).unwrap().id, String::from_str(&env, "c"));
 }
 
+fn metadata_of_len(env: &Env, len: u32) -> String {
+    let s = "a".repeat(len as usize);
+    String::from_str(env, &s)
+}
+
+#[test]
+fn register_accepts_metadata_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-max");
+    let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
+    client.register(&creator, &id, &100i128, &metadata);
+    assert_eq!(client.get(&id).metadata.len(), MAX_METADATA_POINTER_LEN);
+}
+
+#[test]
+fn register_rejects_metadata_over_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-long");
+    let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata),
+        Err(Ok(Error::MetadataTooLong))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn update_metadata_accepts_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-ok");
+    client.register(&creator, &id, &100i128, &String::from_str(&env, "short"));
+    let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata.len(), MAX_METADATA_POINTER_LEN);
+}
+
+#[test]
+fn update_metadata_rejects_over_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-bad");
+    client.register(&creator, &id, &100i128, &String::from_str(&env, "short"));
+    let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
+    assert_eq!(
+        client.try_update_metadata(&id, &metadata),
+        Err(Ok(Error::MetadataTooLong))
+    );
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "short"));
+}
+
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
         client.register(
@@ -289,9 +338,8 @@ fn list_start_beyond_count_returns_empty() {
 fn list_limit_capped_at_20() {
     let (env, creator, client) = setup();
     let ids = [
-        "i00","i01","i02","i03","i04","i05","i06","i07","i08","i09",
-        "i10","i11","i12","i13","i14","i15","i16","i17","i18","i19",
-        "i20","i21","i22","i23","i24",
+        "i00", "i01", "i02", "i03", "i04", "i05", "i06", "i07", "i08", "i09", "i10", "i11", "i12",
+        "i13", "i14", "i15", "i16", "i17", "i18", "i19", "i20", "i21", "i22", "i23", "i24",
     ];
     register_n(&env, &creator, &client, &ids);
 
