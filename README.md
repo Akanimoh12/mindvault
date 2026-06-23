@@ -109,7 +109,7 @@ make install          # or: pnpm install
 
 # 2. Configure environment
 cp server/.env.example server/.env
-# Fill in Supabase, Stellar contract IDs, and OpenRouter credentials.
+# Fill in Supabase, Stellar contract IDs, and OpenRouter credentials (see the full reference table at [docs/server-env.md](docs/server-env.md)).
 
 # 3. One-time setup (DB migrations + wallet generation)
 make setup
