@@ -11,7 +11,6 @@ import {
   setPriceSchema,
   prepareOwnershipSchema,
   transferOwnershipSchema,
-  catalogQuerySchema,
 } from "../schemas/requests.js";
 import { dynamicPaywall } from "../middleware/dynamicPaywall.js";
 import {
@@ -149,8 +148,14 @@ router.post(
 
 // GET /resources — browse catalog (public)
 router.get("/resources", async (req, res) => {
-  const search = typeof req.query.search === "string" ? req.query.search : undefined;
-  const catalog = await listCatalog(search);
+  const parsed = catalogQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid query params" });
+    return;
+  }
+  const catalog = await listCatalog(
+    Object.values(parsed.data).some((v) => v !== undefined) ? parsed.data : undefined,
+  );
   res.json(
     catalog.map((r) => ({
       ...r,

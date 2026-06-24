@@ -67,6 +67,12 @@ export const transferOwnershipSchema = z
   .strict();
 
 /** Query params for GET /resources (public catalog). */
-export const catalogQuerySchema = z.object({
-  verificationStatus: z.enum(["verified", "pending", "rejected"]).optional(),
-});
+export const catalogQuerySchema = z
+  .object({
+    verificationStatus: z.enum(["verified", "pending", "rejected"]).optional(),
+    minPrice: z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative number").optional(),
+    maxPrice: z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative number").optional(),
+    search: z.string().optional(),
+    resourceType: z.enum(["file", "link"]).optional(),
+  })
+  .strict();
