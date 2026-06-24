@@ -187,7 +187,7 @@ async function walletInfo(): Promise<string> {
   return `Address: ${wallet.publicKey}\nUSDC Balance: ${balance}`;
 }
 
-async function browse(): Promise<string> {
+export async function browse(): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources`);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
   const items: any[] = res.data;
@@ -195,7 +195,7 @@ async function browse(): Promise<string> {
   return items.map(formatResource).join("\n\n");
 }
 
-async function search(query: string): Promise<string> {
+export async function search(query: string): Promise<string> {
   const q = (query ?? "").trim().toLowerCase();
   if (!q) return "Provide a non-empty search query.";
   const res = await jsonFetch(`${BASE_URL}/resources`);
@@ -208,7 +208,7 @@ async function search(query: string): Promise<string> {
   return matches.map(formatResource).join("\n\n");
 }
 
-async function preview(resourceId: string): Promise<string> {
+export async function preview(resourceId: string): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
   if (!res.ok) throw new Error(`Preview failed: ${JSON.stringify(res.data)}`);
   const r = res.data;
