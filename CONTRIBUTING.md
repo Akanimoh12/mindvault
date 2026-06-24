@@ -67,6 +67,17 @@ pnpm contract:test   # cargo test
 cd contract && cargo test
 ```
 
+If your contract change alters the on-chain ABI (new methods, changed arguments,
+updated structs), regenerate the TypeScript bindings so consumers stay in sync:
+
+```bash
+pnpm contract:bindings   # regenerates packages/registry-client/src/generated/
+```
+
+See [`docs/registry-client-bindings.md`](docs/registry-client-bindings.md) for
+the full regeneration workflow, which files to commit, and how `server/`, `web/`,
+and `mcp/` consume the bindings.
+
 See [`contract/README.md`](contract/README.md) for the registry interface and
 deployment steps.
 
