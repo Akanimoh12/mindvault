@@ -4,6 +4,7 @@ import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { validate, validateFields } from "../middleware/validate.js";
 import {
   filePublishBodySchema,
+  catalogQuerySchema,
   linkPublishSchema,
   registerResourceSchema,
   preparePriceSchema,
