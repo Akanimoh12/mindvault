@@ -85,6 +85,16 @@ claude mcp add mindvault node /path/to/mindvault/mcp/dist/index.js
 codex mcp add mindvault -- node /path/to/mindvault/mcp/dist/index.js
 ```
 
+All env vars are optional — the defaults point to the hosted testnet backend:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MINDVAULT_URL` | `https://mindvault-hyr3.onrender.com` | MindVault API base URL |
+| `SPONSORED_ACCOUNT_URL` | `https://stellar-sponsored-agent-account.onrender.com` | Sponsored wallet creation service |
+| `VAULT_REGISTRY_CONTRACT_ID` | testnet contract ID | On-chain vault-registry contract |
+| `HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon endpoint (for USDC balance checks) |
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint (for tx status and payments) |
+
 An agent can set up a wallet, register as a publisher, publish a resource (paying for verification), and then another agent can discover and buy that resource. The full agent-to-agent economy runs through x402.
 
 For a copy-pasteable, end-to-end agent session — wallet setup → register → publish → browse → buy — see **[docs/mcp-quickstart.md](docs/mcp-quickstart.md)**.
