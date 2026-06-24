@@ -65,3 +65,13 @@ export const transferOwnershipSchema = z
     newCreator: z.string().min(1),
   })
   .strict();
+
+export const catalogQuerySchema = z
+  .object({
+    search: z.string().trim().min(1).optional(),
+    minPrice: z.string().trim().min(1).optional(),
+    maxPrice: z.string().trim().min(1).optional(),
+    verificationStatus: z.enum(["pending", "verified", "rejected", "skipped"]).optional(),
+    resourceType: z.enum(["file", "link"]).optional(),
+  })
+  .strict();

@@ -6,6 +6,14 @@ import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
 import { createTtlCache } from "../lib/ttlCache.js";
 import { config } from "../config.js";
 
+export type CatalogFilters = {
+  search?: string;
+  minPrice?: string;
+  maxPrice?: string;
+  verificationStatus?: "pending" | "verified" | "rejected" | "skipped";
+  resourceType?: "file" | "link";
+};
+
 // Short-lived cache for catalog/preview reads (issue #115). These endpoints are
 // hit far more often than resources change, so a small TTL cuts repeated DB
 // work while keeping newly published/delisted items fresh within seconds.
@@ -114,13 +122,54 @@ async function queryCatalog() {
     .where(eq(resources.listed, true));
 }
 
-export async function listCatalog(): Promise<Awaited<ReturnType<typeof queryCatalog>>> {
-  const cached = readCache.get(CATALOG_KEY);
-  if (cached !== undefined) return cached as Awaited<ReturnType<typeof queryCatalog>>;
+function matchesSearch(row: Awaited<ReturnType<typeof queryCatalog>>[number], search: string) {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
 
-  const rows = await queryCatalog();
-  readCache.set(CATALOG_KEY, rows);
-  return rows;
+  return [row.title, row.description, row.publisherName].some((value) =>
+    value?.toLowerCase().includes(needle),
+  );
+}
+
+function matchesPriceRange(
+  row: Awaited<ReturnType<typeof queryCatalog>>[number],
+  filters: CatalogFilters,
+) {
+  const price = Number(row.price);
+  if (Number.isNaN(price)) return false;
+
+  if (filters.minPrice !== undefined && price < Number(filters.minPrice)) return false;
+  if (filters.maxPrice !== undefined && price > Number(filters.maxPrice)) return false;
+  return true;
+}
+
+function matchesCatalogFilters(
+  row: Awaited<ReturnType<typeof queryCatalog>>[number],
+  filters?: CatalogFilters,
+) {
+  if (!filters) return true;
+  if (filters.search && !matchesSearch(row, filters.search)) return false;
+  if (filters.verificationStatus && row.verificationStatus !== filters.verificationStatus)
+    return false;
+  if (filters.resourceType && row.resourceType !== filters.resourceType) return false;
+  if (!matchesPriceRange(row, filters)) return false;
+  return true;
+}
+
+export async function listCatalog(
+  filters?: CatalogFilters,
+): Promise<Awaited<ReturnType<typeof queryCatalog>>> {
+  const cached = readCache.get(CATALOG_KEY);
+  const rows =
+    cached !== undefined ? (cached as Awaited<ReturnType<typeof queryCatalog>>) : await queryCatalog();
+
+  if (cached === undefined) {
+    readCache.set(CATALOG_KEY, rows);
+  }
+
+  if (!filters) return rows;
+
+  return rows.filter((row) => matchesCatalogFilters(row, filters));
 }
 
 async function queryResourceMeta(id: string) {

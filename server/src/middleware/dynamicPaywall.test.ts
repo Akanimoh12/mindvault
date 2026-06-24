@@ -42,10 +42,7 @@ vi.mock("../db/client.js", () => ({
 }));
 
 function makeDbSelect(resource: unknown) {
-  const then = vi.fn(async (callback: (rows: unknown[]) => unknown) =>
-    callback(resource ? [resource] : []),
-  );
-  const where = vi.fn(() => ({ then }));
+  const where = vi.fn(() => Promise.resolve(resource ? [resource] : []));
   const from = vi.fn(() => ({ where }));
   return {
     select: vi.fn(() => ({ from })),

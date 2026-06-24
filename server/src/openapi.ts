@@ -375,8 +375,41 @@ export const openApiSpec = {
         tags: ["Resources"],
         summary: "Browse public resource catalog",
         operationId: "listResources",
+        parameters: [
+          {
+            name: "search",
+            in: "query",
+            schema: { type: "string" },
+            description: "Case-insensitive match against title, description, or publisher name",
+          },
+          {
+            name: "minPrice",
+            in: "query",
+            schema: { type: "string" },
+            description: "Minimum USDC price",
+          },
+          {
+            name: "maxPrice",
+            in: "query",
+            schema: { type: "string" },
+            description: "Maximum USDC price",
+          },
+          {
+            name: "verificationStatus",
+            in: "query",
+            schema: { type: "string", enum: ["pending", "verified", "rejected", "skipped"] },
+            description: "Filter by verification status",
+          },
+          {
+            name: "resourceType",
+            in: "query",
+            schema: { type: "string", enum: ["file", "link"] },
+            description: "Filter by resource type",
+          },
+        ],
         responses: {
           "200": { description: "Array of listed resources", content: { "application/json": { schema: { type: "array", items: { $ref: "#/components/schemas/Resource" } } } } },
+          "400": { description: "Invalid query parameters" },
         },
       },
       post: {

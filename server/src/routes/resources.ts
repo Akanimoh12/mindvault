@@ -4,6 +4,7 @@ import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { validate, validateFields } from "../middleware/validate.js";
 import {
   filePublishBodySchema,
+  catalogQuerySchema,
   linkPublishSchema,
   registerResourceSchema,
   preparePriceSchema,
@@ -145,8 +146,14 @@ router.post(
 );
 
 // GET /resources — browse catalog (public)
-router.get("/resources", async (_req, res) => {
-  const catalog = await listCatalog();
+router.get("/resources", async (req, res) => {
+  const parsed = catalogQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.format() });
+    return;
+  }
+
+  const catalog = await listCatalog(parsed.data);
   res.json(
     catalog.map((r) => ({
       ...r,
