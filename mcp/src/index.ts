@@ -13,6 +13,10 @@ import {
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -24,6 +28,47 @@ const HORIZON_URL =
   process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
 const NETWORK = "stellar:testnet";
 
+// ── Wallet persistence ────────────────────────────────────────────────────────
+// Enabled by setting MINDVAULT_PERSIST_WALLET=true.
+// The secret key is encrypted with AES-256-GCM before being written to disk.
+// The encryption key is derived from a per-installation random salt stored
+// alongside the ciphertext — the file is useless without the salt file.
+// To reset: delete ~/.mindvault/wallet.enc (and wallet.salt if desired).
+
+const PERSIST = process.env.MINDVAULT_PERSIST_WALLET === "true";
+const WALLET_DIR = join(homedir(), ".mindvault");
+const WALLET_FILE = join(WALLET_DIR, "wallet.enc");
+const SALT_FILE = join(WALLET_DIR, "wallet.salt");
+
+function loadPersistedWallet(): AgentWallet | null {
+  if (!PERSIST || !existsSync(WALLET_FILE) || !existsSync(SALT_FILE)) return null;
+  try {
+    const salt = readFileSync(SALT_FILE);
+    const raw = readFileSync(WALLET_FILE, "utf8");
+    const { iv, auth, ct, pub } = JSON.parse(raw);
+    const key = scryptSync("mindvault-wallet", salt, 32);
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "hex"));
+    decipher.setAuthTag(Buffer.from(auth, "hex"));
+    const secretKey = decipher.update(ct, "hex", "utf8") + decipher.final("utf8");
+    return { publicKey: pub, secretKey };
+  } catch {
+    return null; // corrupted or tampered — treat as no wallet
+  }
+}
+
+function persistWallet(wallet: AgentWallet): void {
+  if (!PERSIST) return;
+  mkdirSync(WALLET_DIR, { recursive: true, mode: 0o700 });
+  const salt = existsSync(SALT_FILE) ? readFileSync(SALT_FILE) : randomBytes(32);
+  if (!existsSync(SALT_FILE)) writeFileSync(SALT_FILE, salt, { mode: 0o600 });
+  const key = scryptSync("mindvault-wallet", salt, 32);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ct = cipher.update(wallet.secretKey, "utf8", "hex") + cipher.final("hex");
+  const payload = JSON.stringify({ pub: wallet.publicKey, iv: iv.toString("hex"), auth: cipher.getAuthTag().toString("hex"), ct });
+  writeFileSync(WALLET_FILE, payload, { mode: 0o600 });
+}
+
 // ── In-memory agent state ─────────────────────────────────────────────────────
 
 interface AgentWallet {
@@ -31,7 +76,7 @@ interface AgentWallet {
   secretKey: string;
 }
 
-let agentWallet: AgentWallet | null = null;
+let agentWallet: AgentWallet | null = loadPersistedWallet();
 let agentApiKey: string | null = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,7 +122,9 @@ async function setupWallet(): Promise<string> {
   const res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}/create`, { method: "POST" });
   if (!res.ok) throw new Error(`Failed to create wallet: ${JSON.stringify(res.data)}`);
   agentWallet = { publicKey: res.data.publicKey, secretKey: res.data.secretKey };
-  return `Wallet created.\nAddress: ${agentWallet.publicKey}\nSecret key stored in memory (not persisted).`;
+  persistWallet(agentWallet);
+  const persisted = PERSIST ? "Wallet saved to ~/.mindvault/wallet.enc (encrypted)." : "Wallet stored in memory only (set MINDVAULT_PERSIST_WALLET=true to persist).";
+  return `Wallet created.\nAddress: ${agentWallet.publicKey}\n${persisted}`;
 }
 
 async function walletInfo(): Promise<string> {
@@ -194,6 +241,16 @@ async function agentStatus(): Promise<string> {
   return JSON.stringify(res.data, null, 2);
 }
 
+function resetWallet(): string {
+  agentWallet = null;
+  agentApiKey = null;
+  const removed: string[] = [];
+  if (existsSync(WALLET_FILE)) { writeFileSync(WALLET_FILE, "", { mode: 0o600 }); removed.push(WALLET_FILE); }
+  if (existsSync(SALT_FILE))   { writeFileSync(SALT_FILE,  Buffer.alloc(0), { mode: 0o600 }); removed.push(SALT_FILE); }
+  const note = removed.length ? `Cleared persisted files: ${removed.join(", ")}` : "No persisted files found.";
+  return `Wallet cleared from memory. ${note}\nRun mindvault_setup_wallet to create a new one.`;
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -211,6 +268,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: "mindvault_publish", description: "Publish a link resource. Agent wallet signs the x402 verification payment on-chain.", inputSchema: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, price: { type: "string" }, externalUrl: { type: "string" } }, required: ["title", "price", "externalUrl"] } },
     { name: "mindvault_buy", description: "Pay USDC via x402 and access a resource.", inputSchema: { type: "object", properties: { resourceId: { type: "string" } }, required: ["resourceId"] } },
     { name: "mindvault_agent_status", description: "Check the verification agent's earnings and activity.", inputSchema: { type: "object", properties: {}, required: [] } },
+    { name: "mindvault_reset_wallet", description: "Clear the in-memory wallet and wipe any persisted wallet files. Use this to rotate or reset the agent wallet.", inputSchema: { type: "object", properties: {}, required: [] } },
   ],
 }));
 
@@ -227,6 +285,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "mindvault_publish":      result = await publish({ title: args.title as string, description: args.description as string | undefined, price: args.price as string, externalUrl: args.externalUrl as string }); break;
       case "mindvault_buy":          result = await buy(args.resourceId as string); break;
       case "mindvault_agent_status": result = await agentStatus(); break;
+      case "mindvault_reset_wallet":  result = resetWallet(); break;
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: "text", text: result }] };

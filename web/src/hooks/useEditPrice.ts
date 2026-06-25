@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { prepareSetPrice, submitSetPrice } from "../api/resources.js";
+import { checkNetwork } from "./useNetworkCheck.js";
 
 type Status = "idle" | "preparing" | "signing" | "submitting" | "confirmed" | "error";
 
@@ -7,9 +8,11 @@ export function useEditPrice(resourceId: string, apiKey: string) {
   const [status, setStatus] = useState<Status>("idle");
   const [newPrice, setNewPrice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [networkWarning, setNetworkWarning] = useState<string | null>(null);
 
   async function editPrice(price: string) {
     setError(null);
+    setNetworkWarning(null);
     try {
       // Step 1 — fetch unsigned XDR from the server
       setStatus("preparing");
@@ -18,6 +21,14 @@ export function useEditPrice(resourceId: string, apiKey: string) {
         price,
         apiKey
       );
+
+      // Step 1b — warn if wallet is on the wrong network (non-blocking)
+      const warning = await checkNetwork(networkPassphrase);
+      if (warning) {
+        setNetworkWarning(warning);
+        setStatus("idle");
+        return;
+      }
 
       // Step 2 — ask Freighter (or any SEP-43 wallet) to sign
       setStatus("signing");
@@ -47,5 +58,5 @@ export function useEditPrice(resourceId: string, apiKey: string) {
     }
   }
 
-  return { status, newPrice, error, editPrice };
+  return { status, newPrice, error, networkWarning, editPrice };
 }
