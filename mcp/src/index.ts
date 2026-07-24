@@ -971,7 +971,7 @@ function registryInfo(): string {
  * USDC contract IDs, and warnings for environment variable overrides that
  * diverge from presets.
  */
-function networkProfile(): string {
+export function networkProfile(): string {
   const warnings: string[] = [];
 
   // Detect custom overrides that differ from the preset
