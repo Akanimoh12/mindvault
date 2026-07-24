@@ -15,40 +15,51 @@ reads the canonical resource entry here.
 
 ### Methods
 
-| Function | Auth | Args | Returns | Description |
-|----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
-| `set_price(id, new_price)` | `creator` | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0) | `Result<(), Error>` | Update the resource price. |
-| `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes) | `Result<(), Error>` | Update the metadata pointer. |
-| `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
-| `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
-| `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
-| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order. |
-| `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
-| `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
-| `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
+| Function                                 | Auth                  | Args                                                                                                                                                   | Returns                   | Description                                                         |
+| ---------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------- |
+| `register(creator, id, price, metadata)` | `creator`             | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>`       | Register a new resource. Resources are listed by default.           |
+| `set_price(id, new_price)`               | `creator`             | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0)                                                                                  | `Result<(), Error>`       | Update the resource price.                                          |
+| `update_metadata(id, metadata)`          | `creator`             | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes)                                                                        | `Result<(), Error>`       | Update the metadata pointer.                                        |
+| `transfer_ownership(id, new_creator)`    | `creator`             | `id: String` — resource cuid2; `new_creator: Address` — new owner                                                                                      | `Result<(), Error>`       | Transfer resource ownership to a new address.                       |
+| `set_listed(id, listed)`                 | `creator`             | `id: String` — resource cuid2; `listed: bool` — listing state                                                                                          | `Result<(), Error>`       | Set the listing state (true = listed, false = delisted).            |
+| `delist(id)`                             | `creator`             | `id: String` — resource cuid2                                                                                                                          | `Result<(), Error>`       | Convenience; equivalent to `set_listed(id, false)`.                 |
+| `list(start, limit)`                     | —                     | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20)                                                                                  | `Vec<Resource>`           | Paginated resource list in insertion order.                         |
+| `get(id)`                                | —                     | `id: String` — resource cuid2                                                                                                                          | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                |
+| `exists(id)`                             | —                     | `id: String` — resource cuid2                                                                                                                          | `bool`                    | Whether a resource is registered.                                   |
+| `count()`                                | —                     | —                                                                                                                                                      | `u32`                     | Total resources successfully registered (monotonic).                |
+| `admin()`                                | —                     | —                                                                                                                                                      | `Option<Address>`         | Current contract admin address.                                     |
+| `pending_admin()`                        | —                     | —                                                                                                                                                      | `Option<Address>`         | Pending nominated contract admin address.                           |
+| `nominate_new_admin(new_admin)`          | `admin` / `new_admin` | `new_admin: Address` — nominated admin                                                                                                                 | `Result<(), Error>`       | Nominate a new contract admin. If no admin set, sets initial admin. |
+| `accept_admin(new_admin)`                | `pending_admin`       | `new_admin: Address` — pending admin                                                                                                                   | `Result<(), Error>`       | Accept pending admin nomination and become contract admin.          |
 
 ### Error codes
 
-| Code | Error | Description |
-|------|-------|-------------|
-| `1` | `AlreadyRegistered` | A resource with the given `id` already exists. |
-| `2` | `NotFound` | No resource matches the given `id`. |
-| `3` | `InvalidPrice` | Price is `<= 0`. |
-| `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| Code | Error                    | Description                                                      |
+| ---- | ------------------------ | ---------------------------------------------------------------- |
+| `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                   |
+| `2`  | `NotFound`               | No resource matches the given `id`.                              |
+| `3`  | `InvalidPrice`           | Price is `<= 0`.                                                 |
+| `4`  | `MetadataTooLong`        | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `5`  | `InvalidTag`             | Tag format or count validation failed.                           |
+| `6`  | `Unauthorized`           | Caller authentication check failed or unauthorized.              |
+| `7`  | `PendingAdminNotSet`     | No pending admin is set or caller does not match pending admin.  |
+| `8`  | `PendingAdminAlreadySet` | A pending admin nomination is already active.                    |
+| `9`  | `SameAdmin`              | Nominated new admin is already the current contract admin.       |
 
 ### Events
 
-All events use the topic `(symbol, id)` — the first element identifies the event
-kind, the second carries the affected resource id.
+All events use the topic `(symbol, id)` (or `(symbol,)` for admin actions).
 
-| Event | Payload | Triggered by |
-|-------|---------|-------------|
-| `register` | `creator: Address` | `register()` succeeds |
-| `setprice` | `new_price: i128` | `set_price()` succeeds |
-| `updmeta` | `()` | `update_metadata()` succeeds |
-| `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
-| `setlisted` | `listed: bool` | `set_listed()` (and `delist()`) succeeds |
+| Event       | Payload                | Triggered by                             |
+| ----------- | ---------------------- | ---------------------------------------- |
+| `register`  | `creator: Address`     | `register()` succeeds                    |
+| `setprice`  | `new_price: i128`      | `set_price()` succeeds                   |
+| `updmeta`   | `()`                   | `update_metadata()` succeeds             |
+| `transfer`  | `new_creator: Address` | `transfer_ownership()` succeeds          |
+| `setlisted` | `listed: bool`         | `set_listed()` (and `delist()`) succeeds |
+| `setadmin`  | `new_admin: Address`   | Initial `nominate_new_admin()` succeeds  |
+| `nomadmin`  | `new_admin: Address`   | `nominate_new_admin()` succeeds          |
+| `accadmin`  | `new_admin: Address`   | `accept_admin()` succeeds                |
 
 ### Price units
 
@@ -69,8 +80,8 @@ pub struct Resource {
 
 ### Constants
 
-| Constant | Value | Description |
-|----------|-------|-------------|
+| Constant                   | Value | Description                                      |
+| -------------------------- | ----- | ------------------------------------------------ |
 | `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
 
 ### Breaking change: tags on `register` (v2)
@@ -110,15 +121,15 @@ the backend can record resources on registration.
 
 The current canonical testnet deployment:
 
-| Field             | Value                                                          |
-|-------------------|----------------------------------------------------------------|
-| Contract ID       | `CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4`     |
-| Wasm Hash         | `fa60c0c2086fddf6add8abc7e1b191e1368ed62983f4e967069fc4b4d679c8eb` |
-| Deployer Address  | `GDAL5CGX7PU56PS2GJW65JNZSN7VLWI6R7H7E3G2HVS5R6XQQI2NJX34`     |
-| Network           | Stellar Testnet (`Test SDF Network ; September 2015`)          |
-| Soroban RPC       | `https://soroban-testnet.stellar.org`                          |
-| Deployment Date   | 2026-05-27                                                     |
-| Explorer          | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4) |
+| Field            | Value                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Contract ID      | `CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4`                                                                  |
+| Wasm Hash        | `fa60c0c2086fddf6add8abc7e1b191e1368ed62983f4e967069fc4b4d679c8eb`                                                          |
+| Deployer Address | `GDAL5CGX7PU56PS2GJW65JNZSN7VLWI6R7H7E3G2HVS5R6XQQI2NJX34`                                                                  |
+| Network          | Stellar Testnet (`Test SDF Network ; September 2015`)                                                                       |
+| Soroban RPC      | `https://soroban-testnet.stellar.org`                                                                                       |
+| Deployment Date  | 2026-05-27                                                                                                                  |
+| Explorer         | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4) |
 
 Set `VAULT_REGISTRY_CONTRACT_ID` and `SOROBAN_RPC_URL` in the server `.env`
 (see [`server/.env.example`](../server/.env.example)) so the backend can
