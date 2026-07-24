@@ -9,7 +9,7 @@ module.exports = {
     project: [
       "./server/tsconfig.json",
       "./web/tsconfig.json",
-      "./packages/registry-client/tsconfig.json",
+      "./packages/registry-client/tsconfig.eslint.json",
       "./mcp/tsconfig.json",
     ],
     tsconfigRootDir: __dirname,

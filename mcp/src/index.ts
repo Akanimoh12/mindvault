@@ -25,6 +25,16 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { homedir } from "os";
 import { join } from "path";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  type WalletProfile,
+  type AgentWallet,
+  type ProfileState,
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+} from "./profiles.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
