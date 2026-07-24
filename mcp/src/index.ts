@@ -24,7 +24,18 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+  type AgentWallet,
+  type ProfileState,
+  type WalletProfile,
+} from "./profiles.js";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { exportState, restoreState } from "./stateBackup.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +82,16 @@ if (!REGISTRY_CONTRACT_ID) {
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
 
+/** Snapshot (and optionally reset) opt-in tool metrics. Never includes secrets. */
+function toolMetrics(reset: boolean): string {
+  const snap = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snap.enabled) {
+    return "Metrics disabled. Set MINDVAULT_METRICS=1 on the server to enable.";
+  }
+  return JSON.stringify(snap, null, 2);
+}
+
 // ── State persistence ─────────────────────────────────────────────────────────
 
 const STATE_DIR = join(homedir(), ".mindvault");
@@ -111,6 +132,30 @@ export function _setAgentApiKey(k: string | null): void {
 export function _resetProfiles(): void {
   profiles = {};
   activeProfileName = DEFAULT_PROFILE;
+}
+
+/** Apply a restored ProfileState into memory and re-persist (mode 0600). */
+function applyRestoredState(state: ProfileState): void {
+  profiles = state.profiles;
+  activeProfileName = state.activeProfile;
+  saveState();
+}
+
+/** Export encrypted state backup (passphrase-gated). No plaintext secrets in output. */
+export function backupState(passphrase: string): string {
+  const blob = exportState(passphrase);
+  return [
+    "Encrypted state backup ready. Copy the blob below to the new environment.",
+    "Restore with mindvault_restore_state using the same passphrase.",
+    "The blob does not contain plaintext secrets.",
+    "",
+    blob,
+  ].join("\n");
+}
+
+/** Restore state from an encrypted backup. Integrity-checked before any write. */
+export function restoreStateTool(blob: string, passphrase: string): string {
+  return restoreState(blob, passphrase, applyRestoredState);
 }
 
 function loadState(): void {
@@ -1062,6 +1107,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "mindvault_backup_state",
+      description:
+        "Export an encrypted backup of ~/.mindvault/state.json for moving agent environments. Requires a passphrase (min 8 chars). Output is a self-contained ciphertext blob — wallet secret keys and API keys never appear in plaintext. Restore with mindvault_restore_state using the same passphrase. Does not change reset behavior.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          passphrase: {
+            type: "string",
+            description: "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
+          },
+        },
+        required: ["passphrase"],
+      },
+    },
+    {
+      name: "mindvault_restore_state",
+      description:
+        "Restore ~/.mindvault/state.json from an encrypted backup produced by mindvault_backup_state. Validates integrity (wrong passphrase or tampered data fails before any write). Replaces in-memory profiles and re-persists to disk (mode 0600). Existing reset behavior is unchanged.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          blob: {
+            type: "string",
+            description: "Encrypted backup blob from mindvault_backup_state (v1:… format).",
+          },
+          passphrase: {
+            type: "string",
+            description: "Passphrase used when the backup was created (min 8 characters).",
+          },
+        },
+        required: ["blob", "passphrase"],
+      },
+    },
+    {
       name: "mindvault_metrics",
       description:
         "Return opt-in tool-level metrics: per-tool call/error counts and durations, plus payment attempt/failure totals. Enable by setting MINDVAULT_METRICS=1 on the server. Output contains only tool names, counts, and durations — never arguments, wallets, or API keys. Pass reset=true to clear counters after reading.",
@@ -1083,7 +1162,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 async function dispatchTool(name: string, args: any): Promise<string> {
   switch (name) {
     case "mindvault_setup_wallet":
-      return setupWallet();
+      return setupWallet(args.profile as string | undefined);
     case "mindvault_wallet_info":
       return walletInfo();
     case "mindvault_browse":
@@ -1120,7 +1199,11 @@ async function dispatchTool(name: string, args: any): Promise<string> {
     case "mindvault_tx_status":
       return txStatus(args.txHash as string);
     case "mindvault_reset":
-      return resetState();
+      return resetState(args.all === true);
+    case "mindvault_backup_state":
+      return backupState(args.passphrase as string);
+    case "mindvault_restore_state":
+      return restoreStateTool(args.blob as string, args.passphrase as string);
     case "mindvault_metrics":
       return toolMetrics(args.reset === true);
     default:
@@ -1199,6 +1282,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "mindvault_reset":
         result = resetState(args.all === true);
         break;
+      case "mindvault_backup_state":
+        result = backupState(args.passphrase as string);
+        break;
+      case "mindvault_restore_state":
+        result = restoreStateTool(args.blob as string, args.passphrase as string);
+        break;
+      case "mindvault_metrics":
+        result = toolMetrics(args.reset === true);
+        break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -1219,7 +1311,7 @@ if (!process.env.VITEST) {
     networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
     network: STELLAR_NETWORK,
   })
-    .then((result) => {
+    .then((result: { status: string; message: string }) => {
       if (result.status === "mismatch") console.error(`MindVault MCP: ${result.message}`);
     })
     .catch(() => {
