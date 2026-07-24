@@ -43,6 +43,9 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
+    CreatorResources(Address),
+    /// Number of resources currently owned by `creator`.
+    CreatorCount(Address),
 }
 
 #[contracterror]
@@ -87,7 +90,7 @@ impl VaultRegistry {
             creator: creator.clone(),
             price,
             metadata,
-            listed: true, // Resources are listed by default when registered
+            listed: true,
             tags,
         };
         env.storage().persistent().set(&key, &resource);
@@ -99,6 +102,16 @@ impl VaultRegistry {
         Self::bump_persistent(&env, &idx_key);
         env.storage().instance().set(&DataKey::Count, &(count + 1));
         Self::bump_instance(&env);
+
+        let mut list = Self::creator_list(&env, &creator);
+        list.push_back(id.clone());
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(&env, &creator), &list);
+        Self::bump_persistent(&env, &Self::creator_key(&env, &creator));
+
+        let cur = Self::creator_count(&env, &creator);
+        Self::set_creator_count(&env, &creator, cur + 1);
 
         env.events()
             .publish((symbol_short!("register"), creator), id);
@@ -146,8 +159,17 @@ impl VaultRegistry {
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        let previous_creator = resource.creator.clone();
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
+        Self::remove_from_creator_index(&env, &previous_creator, &id);
+        Self::append_to_creator_index(&env, &new_creator, resource.id.clone());
+
+        let old_count = Self::creator_count(&env, &previous_creator);
+        Self::set_creator_count(&env, &previous_creator, old_count.saturating_sub(1));
+        let new_count = Self::creator_count(&env, &new_creator);
+        Self::set_creator_count(&env, &new_creator, new_count + 1);
+
         env.events()
             .publish((symbol_short!("transfer"), id), new_creator);
         Ok(())
@@ -194,6 +216,71 @@ impl VaultRegistry {
         result
     }
 
+    /// Paginated list of resources whose `listed` flag is true, in insertion order.
+    ///
+    /// - Resources are ordered by registration sequence.
+    /// - `limit` is capped at `20`.
+    /// - Delisted resources are skipped; relisted resources will reappear.
+    /// - Returns an empty `Vec` if no listed resources fall in range.
+    pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
+        let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let page_size = limit.min(20);
+        let mut result: Vec<Resource> = Vec::new(&env);
+        let mut i = start;
+        while i < total && result.len() < page_size {
+            if let Some(id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, String>(&DataKey::Index(i))
+            {
+                if let Some(resource) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Resource>(&DataKey::Resource(id))
+                {
+                    if resource.listed {
+                        result.push_back(resource);
+                    }
+                }
+            }
+            i += 1;
+        }
+        result
+    }
+
+    /// Paginated listing of resources owned by `creator` in insertion order.
+    ///
+    /// - Results are ordered by global registration sequence for that creator.
+    /// - `limit` is capped at `20`.
+    /// - Returns empty `Vec` when `start` is beyond the creator's known items.
+    pub fn list_by_creator(env: Env, creator: Address, start: u32, limit: u32) -> Vec<Resource> {
+        let page_size = limit.min(20);
+        let mut result: Vec<Resource> = Vec::new(&env);
+        if page_size == 0 {
+            return result;
+        }
+
+        let list = Self::creator_list(&env, &creator);
+        let total = list.len() as u32;
+        if start >= total {
+            return result;
+        }
+
+        let mut idx = start;
+        while result.len() < page_size && idx < total {
+            let id = list.get(idx).unwrap();
+            if let Some(resource) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Resource>(&DataKey::Resource(id.clone()))
+            {
+                result.push_back(resource);
+            }
+            idx += 1;
+        }
+        result
+    }
+
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
         Self::load(&env, &id)
@@ -213,6 +300,20 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Number of resources currently owned by `creator`. Returns `0` when the
+    /// creator holds no registered resources.
+    ///
+    /// This counter is updated atomically with `register` and
+    /// `transfer_ownership`, so it accurately reflects live ownership for
+    /// dashboards and audits without re-deriving the count from the creator
+    /// index.
+    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CreatorCount(creator.clone()))
+            .unwrap_or(0)
     }
 }
 
@@ -265,6 +366,55 @@ impl VaultRegistry {
         env.storage()
             .instance()
             .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
+    }
+
+    fn creator_key(_env: &Env, creator: &Address) -> DataKey {
+        DataKey::CreatorResources(creator.clone())
+    }
+
+    fn creator_list(env: &Env, creator: &Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<String>>(&Self::creator_key(env, creator))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn append_to_creator_index(env: &Env, creator: &Address, id: String) {
+        let mut list = Self::creator_list(env, creator);
+        list.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(env, creator), &list);
+        Self::bump_persistent(env, &Self::creator_key(env, creator));
+    }
+
+    fn remove_from_creator_index(env: &Env, creator: &Address, id: &String) {
+        let list = Self::creator_list(env, creator);
+        let mut out: Vec<String> = Vec::new(env);
+        for i in 0..list.len() {
+            let v = list.get(i).unwrap();
+            if v != *id {
+                out.push_back(v);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(env, creator), &out);
+        Self::bump_persistent(env, &Self::creator_key(env, creator));
+    }
+
+    fn creator_count(env: &Env, creator: &Address) -> u32 {
+        env.storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CreatorCount(creator.clone()))
+            .unwrap_or(0)
+    }
+
+    fn set_creator_count(env: &Env, creator: &Address, value: u32) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CreatorCount(creator.clone()), &value);
+        Self::bump_instance(env);
     }
 }
 

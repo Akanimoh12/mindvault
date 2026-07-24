@@ -27,6 +27,11 @@ reads the canonical resource entry here.
 | `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
 | `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
 | `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
+| `creator_resource_count(creator)` | — | `creator: Address` | `u32` | Number of resources currently owned by `creator`. Returns `0` for creators with no resources. |
+
+### Ownership semantics
+
+`creator_resource_count` updates atomically with `register` and `transfer_ownership`. A transferred resource is removed from the old creator and added to the new creator in the same transaction, so the count never temporarily reflects both sides for the same ID.
 
 ### Error codes
 
