@@ -165,7 +165,7 @@ fn set_price_emits_structured_event() {
     let (_, _topics, data) = (0..all_events.len())
         .map(|i| all_events.get(i).unwrap())
         .find(|(_id, topics, _data)| {
-            if topics.len() == 0 {
+            if topics.is_empty() {
                 return false;
             }
             let first: soroban_sdk::Symbol =
@@ -181,7 +181,6 @@ fn set_price_emits_structured_event() {
     assert_eq!(payload.new_price, updated_price);
     assert_eq!(payload.updater, creator);
 }
-
 
 #[test]
 fn update_metadata_changes_pointer() {
