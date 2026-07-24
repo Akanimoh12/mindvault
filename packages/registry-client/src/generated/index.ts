@@ -36,6 +36,7 @@ export const Errors = {
   3: { message: "InvalidPrice" },
   4: { message: "MetadataTooLong" },
   5: { message: "InvalidTag" },
+  6: { message: "InvalidResourceId" },
 };
 
 export type DataKey =

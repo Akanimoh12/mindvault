@@ -115,6 +115,40 @@ fn zero_or_negative_price_rejected() {
 }
 
 #[test]
+fn invalid_resource_id_rejected() {
+    let (env, creator, client) = setup();
+    let metadata = String::from_str(&env, "x");
+
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_register(&creator, &empty, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+
+    let overlong = String::from_str(&env, &"a".repeat(25));
+    assert_eq!(
+        client.try_register(&creator, &overlong, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+
+    let invalid_chars = String::from_str(&env, "bad-id");
+    assert_eq!(
+        client.try_register(&creator, &invalid_chars, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+}
+
+#[test]
+fn valid_resource_id_is_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "swcn98besxpp6t1u8e77fqz3");
+    let metadata = String::from_str(&env, "x");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert!(client.exists(&id));
+}
+
+#[test]
 fn get_missing_fails() {
     let (env, _creator, client) = setup();
     let res = client.try_get(&String::from_str(&env, "nope"));

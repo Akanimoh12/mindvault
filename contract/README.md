@@ -17,15 +17,15 @@ reads the canonical resource entry here.
 
 | Function | Auth | Args | Returns | Description |
 |----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
-| `set_price(id, new_price)` | `creator` | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0) | `Result<(), Error>` | Update the resource price. |
-| `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes) | `Result<(), Error>` | Update the metadata pointer. |
-| `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
-| `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
-| `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
+| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique resource ID (1–24 lowercase letters/digits); `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
+| `set_price(id, new_price)` | `creator` | `id: String` — resource ID (1–24 lowercase letters/digits); `new_price: i128` — USDC stroops (> 0) | `Result<(), Error>` | Update the resource price. |
+| `update_metadata(id, metadata)` | `creator` | `id: String` — resource ID (1–24 lowercase letters/digits); `metadata: String` — new pointer (max 512 bytes) | `Result<(), Error>` | Update the metadata pointer. |
+| `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource ID (1–24 lowercase letters/digits); `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
+| `set_listed(id, listed)` | `creator` | `id: String` — resource ID (1–24 lowercase letters/digits); `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
+| `delist(id)` | `creator` | `id: String` — resource ID (1–24 lowercase letters/digits) | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
 | `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order. |
-| `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
-| `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
+| `get(id)` | — | `id: String` — resource ID (1–24 lowercase letters/digits) | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
+| `exists(id)` | — | `id: String` — resource ID (1–24 lowercase letters/digits) | `bool` | Whether a resource is registered. |
 | `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
 
 ### Error codes
@@ -36,6 +36,7 @@ reads the canonical resource entry here.
 | `2` | `NotFound` | No resource matches the given `id`. |
 | `3` | `InvalidPrice` | Price is `<= 0`. |
 | `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `6` | `InvalidResourceId` | Resource ID is empty, longer than 24 characters, or contains characters other than lowercase letters and digits. |
 
 ### Events
 
@@ -59,7 +60,7 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 
 ```rust
 pub struct Resource {
-    pub id: String,       // unique cuid2, matches server resource ID
+    pub id: String,       // unique resource ID (1–24 lowercase letters/digits), matches server resource ID
     pub creator: Address, // current owner's Stellar address
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes

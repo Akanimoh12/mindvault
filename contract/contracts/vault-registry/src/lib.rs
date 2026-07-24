@@ -22,6 +22,8 @@ const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
+/// Max length for resource IDs. The contract expects the server-side cuid2 format.
+pub const MAX_RESOURCE_ID_LEN: u32 = 24;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
 
@@ -54,6 +56,7 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
+    InvalidResourceId = 6,
 }
 
 #[contract]
@@ -75,6 +78,7 @@ impl VaultRegistry {
         if price <= 0 {
             return Err(Error::InvalidPrice);
         }
+        Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
         Self::validate_tags(&env, &tags)?;
         let key = DataKey::Resource(id.clone());
@@ -107,6 +111,7 @@ impl VaultRegistry {
 
     /// Update a resource's price. Only the creator may call this.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         if new_price <= 0 {
             return Err(Error::InvalidPrice);
         }
@@ -121,6 +126,7 @@ impl VaultRegistry {
 
     /// Update a resource's metadata pointer. Only the creator may call this.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::validate_metadata_pointer(&metadata)?;
@@ -133,6 +139,7 @@ impl VaultRegistry {
     /// Replace a resource's discovery tags. Only the creator may call this.
     /// Does not modify `metadata` (the off-chain content pointer).
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         Self::validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -144,6 +151,7 @@ impl VaultRegistry {
 
     /// Hand ownership to a new creator. Only the current creator may call this.
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         resource.creator = new_creator.clone();
@@ -155,6 +163,7 @@ impl VaultRegistry {
 
     /// Set the listing state of a resource. Only the creator may call this.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         resource.listed = listed;
@@ -196,16 +205,18 @@ impl VaultRegistry {
 
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
+        Self::validate_resource_id(&id)?;
         Self::load(&env, &id)
     }
 
     /// Whether a resource with `id` is registered.
     pub fn exists(env: Env, id: String) -> bool {
-        env.storage().persistent().has(&DataKey::Resource(id))
+        Self::validate_resource_id(&id).is_ok() && env.storage().persistent().has(&DataKey::Resource(id))
     }
 
     /// Get the owner address of a resource. Errors with `NotFound` if it does not exist.
     pub fn get_owner(env: Env, id: String) -> Result<Address, Error> {
+        Self::validate_resource_id(&id)?;
         let resource = Self::load(&env, &id)?;
         Ok(resource.creator)
     }
@@ -217,6 +228,24 @@ impl VaultRegistry {
 }
 
 impl VaultRegistry {
+    fn validate_resource_id(id: &String) -> Result<(), Error> {
+        let len = id.len();
+        if len == 0 || len > MAX_RESOURCE_ID_LEN {
+            return Err(Error::InvalidResourceId);
+        }
+
+        for i in 0..len {
+            let ch = id.get(i).unwrap();
+            let is_lower = ch >= 'a' && ch <= 'z';
+            let is_digit = ch >= '0' && ch <= '9';
+            if !(is_lower || is_digit) {
+                return Err(Error::InvalidResourceId);
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
         if metadata.len() > MAX_METADATA_POINTER_LEN {
             return Err(Error::MetadataTooLong);
