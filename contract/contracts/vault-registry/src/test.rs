@@ -638,6 +638,37 @@ fn invalid_tag_rejected() {
     assert_eq!(client.try_set_tags(&id, &bad), Err(Ok(Error::InvalidTag)));
 }
 
+#[test]
+fn register_rejects_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "empty-meta");
+    let metadata = String::from_str(&env, "");
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn update_metadata_rejects_empty() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "upd-empty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "valid"),
+        &empty_tags(&env),
+    );
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_update_metadata(&id, &empty),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "valid"));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
@@ -645,8 +676,8 @@ proptest! {
         id_str in r"[a-zA-Z0-9_-]{1,32}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
-        meta_str in r"[a-zA-Z0-9:/\\._-]{0,512}",
-        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{0,512}",
+        meta_str in r"[a-zA-Z0-9:/\\._-]{1,512}",
+        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,512}",
         listed in any::<bool>(),
     ) {
         let env = Env::default();
@@ -659,33 +690,27 @@ proptest! {
         let metadata = String::from_str(&env, &meta_str);
         let metadata_2 = String::from_str(&env, &meta_str_2);
 
-        // 1. Register resource with initial metadata
         client.register(&creator, &id, &price, &metadata, &empty_tags(&env));
 
-        // 2. Get and verify metadata is identical
         let r = client.get(&id);
         assert_eq!(r.metadata, metadata);
         assert_eq!(r.price, price);
         assert_eq!(r.creator, creator);
         assert!(r.listed);
 
-        // 3. Update metadata
         client.update_metadata(&id, &metadata_2);
 
-        // 4. Verify updated metadata is identical and other fields preserved
         let r2 = client.get(&id);
         assert_eq!(r2.metadata, metadata_2);
         assert_eq!(r2.price, price);
         assert_eq!(r2.creator, creator);
         assert!(r2.listed);
 
-        // 5. Update price and verify metadata is unaffected
         client.set_price(&id, &price_2);
         let r3 = client.get(&id);
         assert_eq!(r3.metadata, metadata_2);
         assert_eq!(r3.price, price_2);
 
-        // 6. Update listing status and verify metadata is unaffected
         client.set_listed(&id, &listed);
         let r4 = client.get(&id);
         assert_eq!(r4.metadata, metadata_2);
