@@ -36,6 +36,7 @@ reads the canonical resource entry here.
 | `2` | `NotFound` | No resource matches the given `id`. |
 | `3` | `InvalidPrice` | Price is `<= 0`. |
 | `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `6` | `InvalidMetadataPointer` | Metadata pointer does not use a supported scheme (for example `ipfs://`, `ar://`, `https://`, `http://`, or a content-hash prefix such as `sha256:` or `0x`). |
 
 ### Events
 
@@ -62,7 +63,7 @@ pub struct Resource {
     pub id: String,       // unique cuid2, matches server resource ID
     pub creator: Address, // current owner's Stellar address
     pub price: i128,      // price in USDC stroops (7 decimals)
-    pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
+    pub metadata: String, // pointer (supported URI or content-hash form), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
 }
 ```
@@ -72,6 +73,8 @@ pub struct Resource {
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
+
+Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`, and content-hash prefixes such as `sha256:` or `0x`. |
 
 ### Breaking change: tags on `register` (v2)
 
