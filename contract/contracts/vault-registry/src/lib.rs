@@ -38,6 +38,18 @@ pub struct Resource {
     pub tags: Vec<String>,
 }
 
+/// One page of the on-chain catalog plus a cursor for the next page.
+///
+/// `next_cursor` is the catalog index to pass back into `list` / `list_page`
+/// as `start`/`cursor`. `None` means end-of-list — clients must not recompute
+/// offsets themselves.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogPage {
+    pub items: Vec<Resource>,
+    pub next_cursor: Option<u32>,
+}
+
 #[contracttype]
 pub enum DataKey {
     Resource(String),
@@ -170,12 +182,27 @@ impl VaultRegistry {
     }
 
     /// Paginated resource list in insertion order. `limit` is capped at 20.
+    ///
+    /// Kept for callers that only need the page body. Prefer `list_page` when
+    /// the client must know the next cursor / end-of-list without recomputing
+    /// offsets.
     pub fn list(env: Env, start: u32, limit: u32) -> Vec<Resource> {
+        Self::list_page(env, start, limit).items
+    }
+
+    /// Paginated catalog page with next-cursor metadata.
+    ///
+    /// - `cursor` is a 0-based catalog index (same domain as `list`'s `start`).
+    /// - `limit` is capped at 20.
+    /// - `next_cursor` is `Some(next_index)` when more entries may exist after
+    ///   this page, or `None` at end-of-list (including empty catalog / cursor
+    ///   past the end).
+    pub fn list_page(env: Env, cursor: u32, limit: u32) -> CatalogPage {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(20);
-        let mut result: Vec<Resource> = Vec::new(&env);
-        let mut i = start;
-        while i < total && result.len() < page_size {
+        let mut items: Vec<Resource> = Vec::new(&env);
+        let mut i = cursor;
+        while i < total && items.len() < page_size {
             if let Some(id) = env
                 .storage()
                 .persistent()
@@ -186,12 +213,13 @@ impl VaultRegistry {
                     .persistent()
                     .get::<DataKey, Resource>(&DataKey::Resource(id))
                 {
-                    result.push_back(resource);
+                    items.push_back(resource);
                 }
             }
             i += 1;
         }
-        result
+        let next_cursor = if i < total { Some(i) } else { None };
+        CatalogPage { items, next_cursor }
     }
 
     /// Fetch a resource. Errors with `NotFound` if it does not exist.

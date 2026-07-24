@@ -588,6 +588,84 @@ fn list_limit_capped_at_20() {
 }
 
 #[test]
+fn list_page_empty_is_end_of_list() {
+    let (_env, _creator, client) = setup();
+    let page = client.list_page(&0u32, &20u32);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_page_exposes_next_cursor_then_end() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["r0", "r1", "r2", "r3", "r4"]);
+
+    let first = client.list_page(&0u32, &3u32);
+    assert_eq!(first.items.len(), 3);
+    assert_eq!(first.items.get(0).unwrap().id, String::from_str(&env, "r0"));
+    assert_eq!(first.items.get(2).unwrap().id, String::from_str(&env, "r2"));
+    assert_eq!(first.next_cursor, Some(3u32));
+
+    let second = client.list_page(&first.next_cursor.unwrap(), &3u32);
+    assert_eq!(second.items.len(), 2);
+    assert_eq!(second.items.get(0).unwrap().id, String::from_str(&env, "r3"));
+    assert_eq!(second.items.get(1).unwrap().id, String::from_str(&env, "r4"));
+    assert_eq!(second.next_cursor, None);
+}
+
+#[test]
+fn list_page_cursor_past_end_is_empty_end_of_list() {
+    let (env, creator, client) = setup();
+    client.register(
+        &creator,
+        &String::from_str(&env, "x"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let page = client.list_page(&99u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_page_exact_page_boundary_is_end_of_list() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c"]);
+
+    let page = client.list_page(&0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_delegates_to_list_page_items() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["r0", "r1", "r2", "r3", "r4"]);
+
+    let body = client.list(&0u32, &3u32);
+    let page = client.list_page(&0u32, &3u32);
+    assert_eq!(body.len(), page.items.len());
+    assert_eq!(body.get(0).unwrap().id, page.items.get(0).unwrap().id);
+    assert_eq!(body.get(2).unwrap().id, page.items.get(2).unwrap().id);
+}
+
+#[test]
+fn list_page_limit_capped_at_20_with_next_cursor() {
+    let (env, creator, client) = setup();
+    let ids = [
+        "i00", "i01", "i02", "i03", "i04", "i05", "i06", "i07", "i08", "i09", "i10", "i11", "i12",
+        "i13", "i14", "i15", "i16", "i17", "i18", "i19", "i20", "i21", "i22", "i23", "i24",
+    ];
+    register_n(&env, &creator, &client, &ids);
+
+    let page = client.list_page(&0u32, &25u32);
+    assert_eq!(page.items.len(), 20);
+    assert_eq!(page.next_cursor, Some(20u32));
+}
+
+#[test]
 fn register_with_tags_stores_labels() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "tagged");
