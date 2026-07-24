@@ -1281,6 +1281,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
+      name: "mindvault_network_profile",
+      description:
+        "Report current Stellar/x402 network configuration (testnet/mainnet), RPC URLs, registry contract ID, and warnings for custom overrides. Use this to verify which network the MCP is connected to and diagnose configuration issues.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
       name: "mindvault_check_bindings",
       description:
         "Verify the installed registry-client bindings match the deployed vault-registry contract interface. Reports a match, or a warning listing the drifting methods with the contract ID, network, client version, and a recommended fix (redeploy the contract or regenerate bindings). Useful after a contract redeploy or client upgrade.",
@@ -1466,6 +1472,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "mindvault_registry_info":
         result = registryInfo();
+        break;
+      case "mindvault_network_profile":
+        result = networkProfile();
         break;
       case "mindvault_check_bindings":
         result = await checkBindings();
