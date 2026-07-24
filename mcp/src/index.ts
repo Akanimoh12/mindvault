@@ -25,6 +25,16 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { homedir } from "os";
 import { join } from "path";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  migrateState,
+  isValidProfileName,
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  type AgentWallet,
+  type WalletProfile,
+  type ProfileState,
+} from "./profiles.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -845,6 +855,18 @@ function registryInfo(): string {
 }
 
 /**
+ * Return opt-in tool-level metrics: per-tool call/error counts and durations,
+ * plus payment attempt/failure totals. Output is always safe for agent
+ * consumption (contains only tool names, counts, and durations — never
+ * arguments, wallets, or API keys).
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset && metrics.enabled) metrics.reset();
+  return JSON.stringify(snapshot, null, 2);
+}
+
+/**
  * Verify the installed registry-client bindings match the deployed contract's
  * interface. Returns the check's deterministic, agent-safe message (a match
  * summary, a mismatch warning with a recommended fix, or a "could not verify"
@@ -1198,6 +1220,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "mindvault_reset":
         result = resetState(args.all === true);
+        break;
+      case "mindvault_metrics":
+        result = toolMetrics(args.reset === true);
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);
