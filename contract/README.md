@@ -17,9 +17,10 @@ reads the canonical resource entry here.
 
 | Function | Auth | Args | Returns | Description |
 |----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
+| `register(creator, id, price, metadata, tags)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes); `tags: Vec<String>` — discovery labels (0-8 items, max 32 chars each) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
 | `set_price(id, new_price)` | `creator` | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0) | `Result<(), Error>` | Update the resource price. |
 | `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes) | `Result<(), Error>` | Update the metadata pointer. |
+| `set_tags(id, tags)` | `creator` | `id: String` — resource cuid2; `tags: Vec<String>` — new tags (0-8 items, max 32 chars each) | `Result<(), Error>` | Replace discovery tags. Does not modify `metadata`. |
 | `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
 | `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
 | `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
@@ -36,6 +37,7 @@ reads the canonical resource entry here.
 | `2` | `NotFound` | No resource matches the given `id`. |
 | `3` | `InvalidPrice` | Price is `<= 0`. |
 | `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `5` | `InvalidTag` | Tag is empty, exceeds `MAX_TAG_LEN` (32 chars), or more than `MAX_TAGS` (8) provided. |
 
 ### Events
 
@@ -47,8 +49,13 @@ kind, the second carries the affected resource id.
 | `register` | `creator: Address` | `register()` succeeds |
 | `setprice` | `new_price: i128` | `set_price()` succeeds |
 | `updmeta` | `()` | `update_metadata()` succeeds |
+| `settags` | `(prev_tags: Vec<String>, next_tags: Vec<String>)` | `set_tags()` succeeds |
 | `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
 | `setlisted` | `listed: bool` | `set_listed()` (and `delist()`) succeeds |
+
+**Note:** The `settags` event emits both previous and next tags, enabling indexers
+to detect tag removals and reconcile state changes without requiring full history
+scans.
 
 ### Price units
 
@@ -64,6 +71,7 @@ pub struct Resource {
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 chars each)
 }
 ```
 
@@ -72,6 +80,8 @@ pub struct Resource {
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
+| `MAX_TAGS` | `8` | Maximum number of tags per resource. |
+| `MAX_TAG_LEN` | `32` | Maximum length of each tag in characters. |
 
 ### Breaking change: tags on `register` (v2)
 
