@@ -692,3 +692,81 @@ proptest! {
         assert_eq!(r4.listed, listed);
     }
 }
+
+#[test]
+fn two_step_transfer_success() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "two-step");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let new_owner = Address::generate(&env);
+    client.propose_transfer(&id, &new_owner);
+    assert_eq!(client.get_owner(&id), creator);
+    
+    client.accept_transfer(&id);
+    assert_eq!(client.get_owner(&id), new_owner);
+}
+
+#[test]
+fn cancel_transfer_works() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "cancel-step");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let new_owner = Address::generate(&env);
+    client.propose_transfer(&id, &new_owner);
+    client.cancel_transfer(&id);
+    
+    let res = client.try_accept_transfer(&id);
+    assert_eq!(res, Err(Ok(Error::NoPendingTransfer)));
+}
+
+#[test]
+fn propose_transfer_to_self_fails() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "self-prop");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let res = client.try_propose_transfer(&id, &creator);
+    assert_eq!(res, Err(Ok(Error::AlreadyOwner)));
+}
+
+#[test]
+fn one_step_transfer_clears_pending() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "clear-step");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let new_owner = Address::generate(&env);
+    client.propose_transfer(&id, &new_owner);
+    
+    let other_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &other_owner);
+    
+    let res = client.try_accept_transfer(&id);
+    assert_eq!(res, Err(Ok(Error::NoPendingTransfer)));
+}
