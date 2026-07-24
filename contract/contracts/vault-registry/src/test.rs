@@ -3,8 +3,8 @@
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger as _},
-    Address, Env, String, Vec,
+    testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+    Address, Env, FromVal, String, Vec,
 };
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -141,6 +141,47 @@ fn set_price_updates_value() {
         Err(Ok(Error::InvalidPrice))
     );
 }
+#[test]
+fn set_price_emits_structured_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-r1");
+    let initial_price = 1_000_000i128;
+    let updated_price = 2_500_000i128;
+
+    client.register(
+        &creator,
+        &id,
+        &initial_price,
+        &String::from_str(&env, "ipfs://QmEventTest"),
+        &empty_tags(&env),
+    );
+
+    client.set_price(&id, &updated_price);
+
+    // Locate the `setprice` event by its leading topic symbol so the test is
+    // robust against any other events emitted (e.g. from `register`).
+    let setprice_sym = soroban_sdk::symbol_short!("setprice");
+    let all_events = env.events().all();
+    let (_, _topics, data) = (0..all_events.len())
+        .map(|i| all_events.get(i).unwrap())
+        .find(|(_id, topics, _data)| {
+            if topics.len() == 0 {
+                return false;
+            }
+            let first: soroban_sdk::Symbol =
+                soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
+            first == setprice_sym
+        })
+        .expect("setprice event not found");
+
+    // Data must deserialise to PriceUpdated with the right field values.
+    let payload = PriceUpdated::from_val(&env, &data);
+    assert_eq!(payload.id, id);
+    assert_eq!(payload.old_price, initial_price);
+    assert_eq!(payload.new_price, updated_price);
+    assert_eq!(payload.updater, creator);
+}
+
 
 #[test]
 fn update_metadata_changes_pointer() {
