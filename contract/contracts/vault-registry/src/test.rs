@@ -588,6 +588,93 @@ fn list_limit_capped_at_20() {
 }
 
 #[test]
+fn list_listed_excludes_delisted() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "a"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "c"));
+}
+
+#[test]
+fn list_listed_empty_when_no_resources() {
+    let (_env, _creator, client) = setup();
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn list_listed_relisted_reappears() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+    assert_eq!(client.list_listed(&0u32, &20u32).len(), 1);
+
+    client.set_listed(&String::from_str(&env, "b"), &true);
+    assert_eq!(client.list_listed(&0u32, &20u32).len(), 2);
+}
+
+#[test]
+fn list_listed_pagination_first_page() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c", "d", "e"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+    client.set_listed(&String::from_str(&env, "d"), &false);
+
+    let page = client.list_listed(&0u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "a"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "c"));
+}
+
+#[test]
+fn list_listed_pagination_second_page() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c", "d", "e"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+
+    let page = client.list_listed(&2u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "c"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "d"));
+}
+
+#[test]
+fn list_listed_start_beyond_listed_items_returns_empty() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b"]);
+
+    let page = client.list_listed(&20u32, &10u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn list_listed_limit_capped_at_20() {
+    let (env, creator, client) = setup();
+    let ids: [&str; 25] = [
+        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9",
+        "i10", "i11", "i12", "i13", "i14", "i15", "i16", "i17", "i18", "i19",
+        "i20", "i21", "i22", "i23", "i24",
+    ];
+    register_n(&env, &creator, &client, &ids);
+
+    // Delist the last 5 so result length can be reached only by traversing the cap.
+    for idx in [20, 21, 22, 23, 24] {
+        client.set_listed(&String::from_str(&env, ids[idx]), &false);
+    }
+
+    let page = client.list_listed(&0u32, &25u32);
+    assert_eq!(page.len(), 20);
+}
+
+#[test]
 fn register_with_tags_stores_labels() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "tagged");

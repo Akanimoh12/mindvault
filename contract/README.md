@@ -64,8 +64,27 @@ pub struct Resource {
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>,// discovery labels (e.g. "dataset", "research")
 }
 ```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `register(...)` | Register a new resource with tags. |
+| `set_price(id, price)` | Update a resource's price. |
+| `update_metadata(id, metadata)` | Update the metadata pointer. |
+| `set_tags(id, tags)` | Replace discovery tags. |
+| `transfer_ownership(id, new_creator)` | Change resource owner. |
+| `set_listed(id, listed)` | Set listing state manually. |
+| `delist(id)` | Convenience for `set_listed(id, false)`. |
+| `list(start, limit)` | Paginated list of **all** resources in insertion order, capped at `20`. |
+| `list_listed(start, limit)` | Paginated list of **listed-only** resources in insertion order, capped at `20`. Skips delisted resources; relisted resources reappear on subsequent calls. |
+| `get(id)` | Fetch a single resource by ID. |
+| `exists(id)` | Whether a resource is registered. |
+| `get_owner(id)` | Fetch resource owner. |
+| `count()` | Total successfully registered resources. |
 
 ### Constants
 
