@@ -25,6 +25,23 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { homedir } from "os";
 import { join } from "path";
 import { signMutatingHeaders } from "./requestSignature.js";
+import {
+  createMetricsRecorder,
+  metricsEnabledFromEnv,
+} from "./metrics.js";
+import {
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+  type AgentWallet,
+  type WalletProfile,
+} from "./profiles.js";
+import {
+  assertMainnetMutationAllowed,
+  formatMainnetDiagnostics,
+  mainnetAllowedFromEnv,
+} from "./mainnetGuardrails.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +87,15 @@ if (!REGISTRY_CONTRACT_ID) {
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
+
+function toolMetrics(reset: boolean): string {
+  const snap = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!metrics.enabled) {
+    return "Metrics disabled. Set MINDVAULT_METRICS=1 to enable tool-level counters.";
+  }
+  return JSON.stringify(snap, null, 2);
+}
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
@@ -834,12 +860,23 @@ function registryInfo(): string {
     contractId: string;
     networkPassphrase: string;
     rpcUrl: string;
+    network: string;
+    x402Network: string;
     resourceFields: (keyof Resource)[];
+    mainnetDiagnostics: string;
   } = {
     contractId: REGISTRY_CONTRACT_ID,
     networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
     rpcUrl: SOROBAN_RPC_URL,
+    network: STELLAR_NETWORK,
+    x402Network: NETWORK,
     resourceFields: ["id", "creator", "price", "metadata", "listed"],
+    mainnetDiagnostics: formatMainnetDiagnostics({
+      stellarNetwork: STELLAR_NETWORK,
+      x402Network: NETWORK,
+      registryContractId: REGISTRY_CONTRACT_ID,
+      allowMainnetEnv: mainnetAllowedFromEnv(),
+    }),
   };
   return JSON.stringify(info, null, 2);
 }
@@ -877,6 +914,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description:
               "Optional profile name to create/switch to (letters, digits, dot, dash, underscore; 1–64 chars).",
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
         },
         required: [],
@@ -961,6 +1003,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: "string" },
           email: { type: "string" },
           walletAddress: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+
         },
         required: ["name", "email"],
       },
@@ -976,16 +1024,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           description: { type: "string" },
           price: { type: "string" },
           externalUrl: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+
         },
         required: ["title", "price", "externalUrl"],
       },
     },
     {
       name: "mindvault_buy",
-      description: "Pay USDC via x402 and access a resource.",
+      description: "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
       inputSchema: {
         type: "object",
-        properties: { resourceId: { type: "string" } },
+        properties: {
+          resourceId: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+        },
         required: ["resourceId"],
       },
     },
@@ -999,6 +1060,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           resourceId: {
             type: "string",
             description: "The id of the resource to register on-chain (from mindvault_publish).",
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
         },
         required: ["resourceId"],
@@ -1057,6 +1123,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "boolean",
             description: "Clear every profile and delete the state file (default: active only).",
           },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
         },
         required: [],
       },
@@ -1081,6 +1152,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 async function dispatchTool(name: string, args: any): Promise<string> {
+  assertMainnetMutationAllowed(STELLAR_NETWORK, name, args ?? {});
   switch (name) {
     case "mindvault_setup_wallet":
       return setupWallet();
@@ -1131,6 +1203,7 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
+    assertMainnetMutationAllowed(STELLAR_NETWORK, name, args as Record<string, unknown>);
     let result: string;
     switch (name) {
       case "mindvault_setup_wallet":

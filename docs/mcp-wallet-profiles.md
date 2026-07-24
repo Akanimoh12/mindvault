@@ -64,3 +64,8 @@ named `default` and re-persisted in the current format:
 No action is required — existing wallets keep working as the `default` profile.
 The migration is covered by unit tests in
 [`mcp/src/profiles.test.ts`](../mcp/src/profiles.test.ts).
+
+## Mainnet guardrails
+
+When `STELLAR_NETWORK` is `mainnet`, mutation and buy tools require `confirmMainnet: true` (or process env `MINDVAULT_ALLOW_MAINNET=1`). Profile list/switch/info tools are read-only and stay unrestricted. See [mainnet-deployment-checklist.md](./mainnet-deployment-checklist.md#mcp-mainnet-guardrails).
+
