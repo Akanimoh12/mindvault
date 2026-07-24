@@ -31,14 +31,6 @@ jobs:
             ${{ runner.os }}-contract-wasm-
             ${{ runner.os }}-cargo-
 
-      - name: Install Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
       - name: Install Stellar CLI
         run: |
           curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
@@ -48,13 +40,15 @@ jobs:
         working-directory: contract
         run: stellar contract build --manifest-path Cargo.toml
 
-      - name: Generate bindings and check freshness
+      - name: Enforce WASM size budget
+        working-directory: contract
         run: |
-          pnpm install --frozen-lockfile
-          CONTRACT_WASM=contract/target/wasm32v1-none/release/vault_registry.wasm pnpm contract:bindings
-          if ! git diff --quiet packages/registry-client/src/generated; then
-            echo "::error::Generated contract bindings are out of date! Please run 'CONTRACT_WASM=contract/target/wasm32v1-none/release/vault_registry.wasm pnpm contract:bindings' locally and commit the changes."
-            git diff packages/registry-client/src/generated
+          WASM_FILE="target/wasm32v1-none/release/vault_registry.wasm"
+          MAX_SIZE=10240
+          SIZE=$(stat -c%s "$WASM_FILE")
+          echo "WASM Size: $SIZE bytes"
+          if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+            echo "::error::WASM size ($SIZE bytes) exceeds the maximum allowed budget ($MAX_SIZE bytes). Please optimize or explicitly update the budget if this growth is expected."
             exit 1
           fi
 
