@@ -254,16 +254,6 @@ function makePaidFetch(wallet: AgentWallet) {
   return wrapFetchWithPayment(fetch, client);
 }
 
-async function getUsdcBalance(publicKey: string): Promise<string> {
-  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
-  if (!res.ok) return "0";
-  const data: any = await res.json();
-  const b = (data.balances ?? []).find(
-    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
-  );
-  return b?.balance ?? "0";
-}
-
 /**
  * Account/balance states the tool can distinguish for agent-facing output:
  * - missing: account does not exist on Stellar (never funded)
@@ -357,6 +347,21 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
     xlmAvailable: available.toFixed(7),
     usdcBalance: usdc,
   };
+}
+
+/**
+ * Legacy helper — returns USDC balance as a string, defaulting to "0" for
+ * missing account or trustline. Preserved for backward compatibility with
+ * insufficientFundsMessage() and other call sites. New code should use
+ * getBalanceDetails() for richer diagnostics.
+ */
+async function getUsdcBalance(publicKey: string): Promise<string> {
+  try {
+    const details = await getBalanceDetails(publicKey);
+    return details.usdcBalance;
+  } catch {
+    return "0";
+  }
 }
 
 function formatResource(r: any): string {
@@ -503,13 +508,24 @@ async function setupWallet(profileArg?: string): Promise<string> {
 
 export async function walletInfo(): Promise<string> {
   const wallet = requireWallet();
-  const balance = await getUsdcBalance(wallet.publicKey);
-  return [
+  const details = await getBalanceDetails(wallet.publicKey);
+
+  const lines = [
     `Profile: ${activeProfileName}`,
     `Address: ${wallet.publicKey}`,
-    `USDC Balance: ${balance}`,
+    `XLM Balance: ${details.xlmBalance}`,
+    `XLM Reserved: ${details.xlmReserve} (base + subentries)`,
+    `XLM Available: ${details.xlmAvailable}`,
+    `USDC Balance: ${details.usdcBalance}`,
+    `USDC Status: ${details.status}`,
     `Publisher registered: ${currentApiKey() ? "yes" : "no"}`,
-  ].join("\n");
+  ];
+
+  if (details.message) {
+    lines.push(`Note: ${details.message}`);
+  }
+
+  return lines.join("\n");
 }
 
 /** Switch the active profile, creating it if new. */
