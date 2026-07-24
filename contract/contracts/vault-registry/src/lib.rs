@@ -43,6 +43,7 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
+    Profile(Address),
 }
 
 #[contracterror]
@@ -213,6 +214,23 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Update the creator's profile metadata pointer.
+    pub fn update_profile(env: Env, creator: Address, metadata: String) -> Result<(), Error> {
+        creator.require_auth();
+        Self::validate_metadata_pointer(&metadata)?;
+        let key = DataKey::Profile(creator.clone());
+        env.storage().persistent().set(&key, &metadata);
+        Self::bump_persistent(&env, &key);
+        env.events().publish((symbol_short!("updprof"), creator), ());
+        Ok(())
+    }
+
+    /// Read a creator's profile metadata pointer. Errors with `NotFound` if none exists.
+    pub fn get_profile(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::Profile(creator);
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 

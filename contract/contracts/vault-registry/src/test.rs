@@ -692,3 +692,30 @@ proptest! {
         assert_eq!(r4.listed, listed);
     }
 }
+
+#[test]
+fn profile_crud_works() {
+    let (env, creator, client) = setup();
+    
+    let res = client.try_get_profile(&creator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+    
+    let metadata = String::from_str(&env, "ipfs://qm123");
+    client.update_profile(&creator, &metadata);
+    
+    let read_metadata = client.get_profile(&creator);
+    assert_eq!(read_metadata, metadata);
+}
+
+#[test]
+fn profile_rejects_over_max_length() {
+    let (env, creator, client) = setup();
+    
+    let mut bytes = [0u8; 513];
+    bytes.fill(b'a');
+    let s_str = core::str::from_utf8(&bytes).unwrap();
+    let metadata = String::from_str(&env, s_str);
+    
+    let res = client.try_update_profile(&creator, &metadata);
+    assert_eq!(res, Err(Ok(Error::MetadataTooLong)));
+}
