@@ -53,6 +53,41 @@ fn register_then_read() {
 }
 
 #[test]
+fn register_event_contains_full_resource_payload() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-res");
+    let metadata = String::from_str(&env, "ipfs://evt");
+    let price = 500i128;
+    let tags_list = tags(&env, &["tag1"]);
+
+    client.register(&creator, &id, &price, &metadata, &tags_list);
+
+    let all_events = env.events().all();
+    let mut found = false;
+    for i in 0..all_events.len() {
+        let (_, topics, data) = all_events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap()).ok().unwrap();
+        if t0 != Symbol::new(&env, "register") {
+            continue;
+        }
+        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data).ok().unwrap();
+        assert_eq!(resource.id, id);
+        assert_eq!(resource.creator, creator);
+        assert_eq!(resource.price, price);
+        assert_eq!(resource.metadata, metadata);
+        assert!(resource.listed);
+        assert_eq!(resource.tags.len(), 1);
+        assert_eq!(resource.tags.get(0).unwrap(), String::from_str(&env, "tag1"));
+        found = true;
+        break;
+    }
+    assert!(found, "register event not emitted");
+}
+
+#[test]
 fn count_tracks_multiple_successful_registrations() {
     let (env, creator, client) = setup();
     assert_eq!(client.count(), 0);
