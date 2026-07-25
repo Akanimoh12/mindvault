@@ -1,0 +1,202 @@
+/**
+ * Encrypted local-state backup and restore for the MindVault MCP server.
+ *
+ * State holds credentials (wallet secret keys, publisher API keys), so a backup
+ * must never leak plaintext secrets. This module encrypts the persisted
+ * ProfileState with AES-256-GCM, keyed from a caller-supplied passphrase via
+ * scrypt. The output is a single base64 string an agent can copy between
+ * environments.
+ *
+ * Integrity is bound to the ciphertext: any tampering or wrong passphrase fails
+ * the GCM auth tag before any state is touched, so restoreState is safe to
+ * call on untrusted input.
+ *
+ * Reset behavior is intentionally untouched — this module only adds export/import.
+ */
+
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+import { STATE_VERSION, type ProfileState, type WalletProfile } from "./profiles.js";
+
+const STATE_DIR = join(homedir(), ".mindvault");
+const STATE_FILE = join(STATE_DIR, "state.json");
+
+// scrypt cost params — tuned for interactive passphrase derivation (not hot path).
+// N=2^14 keeps OpenSSL maxmem happy in constrained CI/agent envs.
+const SCRYPT_N = 1 << 14;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_MAXMEM = 64 * 1024 * 1024;
+const KEY_LEN = 32;
+const SALT_LEN = 16;
+const NONCE_LEN = 12;
+const AUTH_TAG_LEN = 8 * 2;
+
+/** Deterministic, agent-safe error messages (no internal details leaked). */
+export class StateBackupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StateBackupError";
+  }
+}
+
+/**
+ * Read the current persisted state. Returns a normalized ProfileState.
+ * Throws a deterministic error when the state file is missing or unreadable.
+ */
+export function readPersistedState(): ProfileState {
+  if (!existsSync(STATE_FILE)) {
+    throw new StateBackupError("No state file found. Run mindvault_setup_wallet first.");
+  }
+  try {
+    const raw = readFileSync(STATE_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    return normalizePersisted(parsed);
+  } catch {
+    throw new StateBackupError("State file is corrupted and could not be read.");
+  }
+}
+
+/**
+ * Export the current state as an encrypted, base64-encoded string.
+ *
+ * The output is self-contained: v1:<salt>:<nonce>:<ciphertext+tag>. The
+ * passphrase is never stored or logged. Plaintext secrets never appear in the
+ * output — only the encrypted profile bytes do.
+ */
+export function exportState(passphrase: string): string {
+  if (!passphrase || passphrase.length < 8) {
+    throw new StateBackupError("Passphrase must be at least 8 characters.");
+  }
+  const state = readPersistedState();
+  const payload = JSON.stringify(state);
+  const salt = randomBytes(SALT_LEN);
+  const nonce = randomBytes(NONCE_LEN);
+  const key = scryptSync(passphrase, salt, KEY_LEN, {
+    N: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+    maxmem: SCRYPT_MAXMEM,
+  });
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const ciphertext = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const blob = Buffer.concat([ciphertext, tag]);
+  return `v1:${salt.toString("base64")}:${nonce.toString("base64")}:${blob.toString("base64")}`;
+}
+
+/**
+ * Restore state from an encrypted backup string.
+ *
+ * Validates the passphrase and integrity (GCM auth tag) before writing anything.
+ * On success the in-memory state is replaced and re-persisted (mode 0600).
+ * On any failure no state is modified and a deterministic error is thrown.
+ */
+export function restoreState(
+  blob: string,
+  passphrase: string,
+  write: (state: ProfileState) => void,
+): string {
+  if (!passphrase || passphrase.length < 8) {
+    throw new StateBackupError("Passphrase must be at least 8 characters.");
+  }
+  const parts = blob.split(":");
+  if (parts.length !== 4 || parts[0] !== "v1") {
+    throw new StateBackupError("Invalid backup format.");
+  }
+  let salt: Buffer;
+  let nonce: Buffer;
+  let payload: Buffer;
+  try {
+    salt = Buffer.from(parts[1], "base64");
+    nonce = Buffer.from(parts[2], "base64");
+    payload = Buffer.from(parts[3], "base64");
+  } catch {
+    throw new StateBackupError("Invalid backup encoding.");
+  }
+  if (salt.length !== SALT_LEN || nonce.length !== NONCE_LEN || payload.length < AUTH_TAG_LEN) {
+    throw new StateBackupError("Invalid backup payload.");
+  }
+  const key = scryptSync(passphrase, salt, KEY_LEN, {
+    N: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+    maxmem: SCRYPT_MAXMEM,
+  });
+  const ciphertext = payload.subarray(0, payload.length - AUTH_TAG_LEN);
+  const tag = payload.subarray(payload.length - AUTH_TAG_LEN);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  decipher.setAuthTag(tag);
+  let plaintext: string;
+  try {
+    plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  } catch {
+    throw new StateBackupError(
+      "Backup integrity check failed (wrong passphrase or tampered data).",
+    );
+  }
+  let state: ProfileState;
+  try {
+    state = normalizePersisted(JSON.parse(plaintext));
+  } catch {
+    throw new StateBackupError("Backup contents are not valid state.");
+  }
+  write(state);
+  return `State restored: ${Object.keys(state.profiles).length} profile(s), active "${state.activeProfile}".`;
+}
+
+/**
+ * Normalize an unknown parsed value into a valid ProfileState, mirroring the
+ * rules in profiles.ts (valid profile names, valid wallets, non-empty API
+ * keys). Unrecognized fields are dropped so restored state cannot smuggle junk.
+ */
+function normalizePersisted(raw: unknown): ProfileState {
+  if (!raw || typeof raw !== "object") {
+    return { version: STATE_VERSION, activeProfile: "default", profiles: {} };
+  }
+  const obj = raw as Record<string, unknown>;
+  const profiles: Record<string, WalletProfile> = {};
+  const rawProfiles =
+    obj.profiles && typeof obj.profiles === "object"
+      ? (obj.profiles as Record<string, unknown>)
+      : {};
+  for (const [name, value] of Object.entries(rawProfiles)) {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || !value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    const profile: WalletProfile = {};
+    const w = v.wallet;
+    if (w && typeof w === "object") {
+      const ww = w as Record<string, unknown>;
+      if (
+        typeof ww.publicKey === "string" &&
+        ww.publicKey.length > 0 &&
+        typeof ww.secretKey === "string" &&
+        ww.secretKey.length > 0
+      ) {
+        profile.wallet = { publicKey: ww.publicKey, secretKey: ww.secretKey };
+      }
+    }
+    if (typeof v.apiKey === "string" && v.apiKey.length > 0) profile.apiKey = v.apiKey;
+    profiles[name] = profile;
+  }
+  const requested = typeof obj.activeProfile === "string" ? obj.activeProfile : "default";
+  const activeProfile =
+    (requested in profiles ? requested : Object.keys(profiles)[0]) ?? "default";
+  return { version: STATE_VERSION, activeProfile, profiles };
+}
+
+/**
+ * Persist a restored ProfileState to disk (mode 0600), mirroring saveState in
+ * index.ts. Exposed for testability.
+ */
+export function persistState(state: ProfileState): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+  } catch (err) {
+    throw new StateBackupError(`Failed to persist restored state: ${err}`);
+  }
+}
+
