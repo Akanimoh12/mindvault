@@ -65,7 +65,7 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 
 ```rust
 pub struct Resource {
-    pub id: String,       // unique cuid2, matches server resource ID
+    pub id: String,       // unique resource ID (1–24 lowercase letters/digits), matches server resource ID
     pub creator: Address, // current owner's Stellar address
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes

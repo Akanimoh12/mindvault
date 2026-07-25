@@ -92,6 +92,7 @@ impl VaultRegistry {
         if price <= 0 {
             return Err(Error::InvalidPrice);
         }
+        Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
         Self::validate_tags(&env, &tags)?;
         if Self::is_reserved_id(&id) {
@@ -127,6 +128,7 @@ impl VaultRegistry {
 
     /// Update a resource's price. Only the creator may call this.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         if new_price <= 0 {
             return Err(Error::InvalidPrice);
         }
@@ -141,6 +143,7 @@ impl VaultRegistry {
 
     /// Update a resource's metadata pointer. Only the creator may call this.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::validate_metadata_pointer(&metadata)?;
@@ -153,6 +156,7 @@ impl VaultRegistry {
     /// Replace a resource's discovery tags. Only the creator may call this.
     /// Does not modify `metadata` (the off-chain content pointer).
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         Self::validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -163,6 +167,7 @@ impl VaultRegistry {
     }
 
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         if resource.creator == new_creator {
@@ -227,6 +232,7 @@ impl VaultRegistry {
 
     /// Set the listing state of a resource. Only the creator may call this.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         resource.listed = listed;
@@ -316,16 +322,18 @@ impl VaultRegistry {
 
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
+        Self::validate_resource_id(&id)?;
         Self::load(&env, &id)
     }
 
     /// Whether a resource with `id` is registered.
     pub fn exists(env: Env, id: String) -> bool {
-        env.storage().persistent().has(&DataKey::Resource(id))
+        Self::validate_resource_id(&id).is_ok() && env.storage().persistent().has(&DataKey::Resource(id))
     }
 
     /// Get the owner address of a resource. Errors with `NotFound` if it does not exist.
     pub fn get_owner(env: Env, id: String) -> Result<Address, Error> {
+        Self::validate_resource_id(&id)?;
         let resource = Self::load(&env, &id)?;
         Ok(resource.creator)
     }
