@@ -282,6 +282,38 @@ impl VaultRegistry {
         CatalogPage { items, next_cursor }
     }
 
+    /// Paginated list of resources whose `listed` flag is true, in insertion order.
+    ///
+    /// - Resources are ordered by registration sequence.
+    /// - `limit` is capped at `20`.
+    /// - Delisted resources are skipped; relisted resources will reappear.
+    /// - Returns an empty `Vec` if no listed resources fall in range.
+    pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
+        let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let page_size = limit.min(20);
+        let mut result: Vec<Resource> = Vec::new(&env);
+        let mut i = start;
+        while i < total && result.len() < page_size {
+            if let Some(id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, String>(&DataKey::Index(i))
+            {
+                if let Some(resource) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Resource>(&DataKey::Resource(id))
+                {
+                    if resource.listed {
+                        result.push_back(resource);
+                    }
+                }
+            }
+            i += 1;
+        }
+        result
+    }
+
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
         Self::load(&env, &id)
