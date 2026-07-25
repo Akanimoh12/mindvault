@@ -26,6 +26,8 @@ const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
 pub const MAX_TERMS_HASH_LEN: u32 = 64;
 const MAX_TAGS: u32 = 8;
+/// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
+pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
 
 #[contracttype]
@@ -81,6 +83,7 @@ pub enum Error {
     AlreadyOwner = 10,
     NoPendingTransfer = 11,
     ReservedId = 12,
+    PriceExceedsMax = 13,
 }
 
 #[contract]
@@ -88,7 +91,8 @@ pub struct VaultRegistry;
 
 #[contractimpl]
 impl VaultRegistry {
-    /// Register a new resource. Errors if `id` already exists or `price <= 0`.
+    /// Register a new resource. Price is in USDC stroops (6 decimals).
+    /// Rejects `price <= 0` (`InvalidPrice`) or `price > MAX_PRICE` (`PriceExceedsMax`).
     /// Requires the creator's authorization.
     pub fn register(
         env: Env,
@@ -99,9 +103,7 @@ impl VaultRegistry {
         tags: Vec<String>,
     ) -> Result<(), Error> {
         creator.require_auth();
-        if price <= 0 {
-            return Err(Error::InvalidPrice);
-        }
+        Self::validate_price(price)?;
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
         Self::validate_tags(&env, &tags)?;
@@ -146,12 +148,11 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Update a resource's price. Only the creator may call this.
+    /// Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
+    /// Only the creator may call this.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
-        if new_price <= 0 {
-            return Err(Error::InvalidPrice);
-        }
+        Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         resource.price = new_price;
@@ -444,6 +445,16 @@ impl VaultRegistry {
 }
 
 impl VaultRegistry {
+    fn validate_price(price: i128) -> Result<(), Error> {
+        if price <= 0 {
+            return Err(Error::InvalidPrice);
+        }
+        if price > MAX_PRICE {
+            return Err(Error::PriceExceedsMax);
+        }
+        Ok(())
+    }
+
     fn validate_resource_id(id: &String) -> Result<(), Error> {
         let len = id.len();
         if len == 0 || len > 24 {
