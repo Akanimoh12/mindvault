@@ -51,10 +51,21 @@ kind, the second carries the affected resource id.
 |-------|---------|-------------|
 | `register` | `creator: Address` | `register()` succeeds |
 | `setprice` | `new_price: i128` | `set_price()` succeeds |
-| `updmeta` | `()` | `update_metadata()` succeeds |
+| `updmeta` | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds |
 | `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
 | `setlisted` | `listed: bool` | `set_listed()` (and `delist()`) succeeds |
 | `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
+
+The `updmeta` event carries structured data so that off-chain indexers can build
+a full audit trail without querying historical ledger state:
+
+```rust
+pub struct MetadataUpdateEvent {
+    pub id: String,           // the resource id
+    pub old_metadata: String, // metadata pointer before the update
+    pub new_metadata: String, // metadata pointer after the update
+}
+```
 
 ### Price units
 

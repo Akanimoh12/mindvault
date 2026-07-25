@@ -65,6 +65,18 @@ pub enum DataKey {
     PendingTransfer(String),
 }
 
+/// Event data emitted when a resource's metadata pointer is updated.
+/// Carries the resource id, the previous metadata pointer, and the new one
+/// so that off-chain indexers can build a full audit trail without querying
+/// historical ledger state.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetadataUpdateEvent {
+    pub id: String,
+    pub old_metadata: String,
+    pub new_metadata: String,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -162,14 +174,27 @@ impl VaultRegistry {
     }
 
     /// Update a resource's metadata pointer. Only the creator may call this.
+    ///
+    /// Emits a [`MetadataUpdateEvent`] containing the resource id, the previous
+    /// metadata pointer (`old_metadata`), and the new one (`new_metadata`).
+    /// Off-chain indexers can use these fields to build an audit trail without
+    /// querying historical ledger state.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::validate_metadata_pointer(&metadata)?;
-        resource.metadata = metadata;
+        let old_metadata = resource.metadata.clone();
+        resource.metadata = metadata.clone();
         Self::save(&env, &resource);
-        env.events().publish((symbol_short!("updmeta"), id), ());
+        env.events().publish(
+            (symbol_short!("updmeta"), id.clone()),
+            MetadataUpdateEvent {
+                id,
+                old_metadata,
+                new_metadata: metadata,
+            },
+        );
         Ok(())
     }
 
