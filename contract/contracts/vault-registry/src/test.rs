@@ -115,6 +115,40 @@ fn zero_or_negative_price_rejected() {
 }
 
 #[test]
+fn invalid_resource_id_rejected() {
+    let (env, creator, client) = setup();
+    let metadata = String::from_str(&env, "x");
+
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_register(&creator, &empty, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+
+    let overlong = String::from_str(&env, &"a".repeat(25));
+    assert_eq!(
+        client.try_register(&creator, &overlong, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+
+    let invalid_chars = String::from_str(&env, "bad-id");
+    assert_eq!(
+        client.try_register(&creator, &invalid_chars, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidResourceId))
+    );
+}
+
+#[test]
+fn valid_resource_id_is_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "swcn98besxpp6t1u8e77fqz3");
+    let metadata = String::from_str(&env, "x");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert!(client.exists(&id));
+}
+
+#[test]
 fn get_missing_fails() {
     let (env, _creator, client) = setup();
     let res = client.try_get(&String::from_str(&env, "nope"));
@@ -439,6 +473,56 @@ fn update_metadata_rejects_over_max_length() {
     assert_eq!(client.get(&id).metadata, String::from_str(&env, "short"));
 }
 
+#[test]
+fn register_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-empty");
+    let metadata = String::from_str(&env, "");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn register_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-one");
+    let metadata = String::from_str(&env, "a");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-empty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-one");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "a");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
         client.register(
@@ -585,6 +669,168 @@ fn list_limit_capped_at_20() {
     // Requesting 25 items should be silently capped to 20.
     let page = client.list(&0u32, &25u32);
     assert_eq!(page.len(), 20);
+}
+
+#[test]
+fn list_listed_excludes_delisted() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "a"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "c"));
+}
+
+#[test]
+fn list_listed_empty_when_no_resources() {
+    let (_env, _creator, client) = setup();
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn list_listed_relisted_reappears() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+    assert_eq!(client.list_listed(&0u32, &20u32).len(), 1);
+
+    client.set_listed(&String::from_str(&env, "b"), &true);
+    assert_eq!(client.list_listed(&0u32, &20u32).len(), 2);
+}
+
+#[test]
+fn list_listed_pagination_first_page() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c", "d", "e"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+    client.set_listed(&String::from_str(&env, "d"), &false);
+
+    let page = client.list_listed(&0u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "a"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "c"));
+}
+
+#[test]
+fn list_listed_pagination_second_page() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c", "d", "e"]);
+
+    client.set_listed(&String::from_str(&env, "b"), &false);
+
+    let page = client.list_listed(&2u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "c"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "d"));
+}
+
+#[test]
+fn list_listed_start_beyond_listed_items_returns_empty() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b"]);
+
+    let page = client.list_listed(&20u32, &10u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn list_listed_limit_capped_at_20() {
+    let (env, creator, client) = setup();
+    let ids: [&str; 25] = [
+        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9",
+        "i10", "i11", "i12", "i13", "i14", "i15", "i16", "i17", "i18", "i19",
+        "i20", "i21", "i22", "i23", "i24",
+    ];
+    register_n(&env, &creator, &client, &ids);
+
+    // Delist the last 5 so result length can be reached only by traversing the cap.
+    for idx in [20, 21, 22, 23, 24] {
+        client.set_listed(&String::from_str(&env, ids[idx]), &false);
+    }
+
+    let page = client.list_listed(&0u32, &25u32);
+    assert_eq!(page.len(), 20);
+fn list_page_empty_is_end_of_list() {
+    let (_env, _creator, client) = setup();
+    let page = client.list_page(&0u32, &20u32);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_page_exposes_next_cursor_then_end() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["r0", "r1", "r2", "r3", "r4"]);
+
+    let first = client.list_page(&0u32, &3u32);
+    assert_eq!(first.items.len(), 3);
+    assert_eq!(first.items.get(0).unwrap().id, String::from_str(&env, "r0"));
+    assert_eq!(first.items.get(2).unwrap().id, String::from_str(&env, "r2"));
+    assert_eq!(first.next_cursor, Some(3u32));
+
+    let second = client.list_page(&first.next_cursor.unwrap(), &3u32);
+    assert_eq!(second.items.len(), 2);
+    assert_eq!(second.items.get(0).unwrap().id, String::from_str(&env, "r3"));
+    assert_eq!(second.items.get(1).unwrap().id, String::from_str(&env, "r4"));
+    assert_eq!(second.next_cursor, None);
+}
+
+#[test]
+fn list_page_cursor_past_end_is_empty_end_of_list() {
+    let (env, creator, client) = setup();
+    client.register(
+        &creator,
+        &String::from_str(&env, "x"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let page = client.list_page(&99u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_page_exact_page_boundary_is_end_of_list() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["a", "b", "c"]);
+
+    let page = client.list_page(&0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn list_delegates_to_list_page_items() {
+    let (env, creator, client) = setup();
+    register_n(&env, &creator, &client, &["r0", "r1", "r2", "r3", "r4"]);
+
+    let body = client.list(&0u32, &3u32);
+    let page = client.list_page(&0u32, &3u32);
+    assert_eq!(body.len(), page.items.len());
+    assert_eq!(body.get(0).unwrap().id, page.items.get(0).unwrap().id);
+    assert_eq!(body.get(2).unwrap().id, page.items.get(2).unwrap().id);
+}
+
+#[test]
+fn list_page_limit_capped_at_20_with_next_cursor() {
+    let (env, creator, client) = setup();
+    let ids = [
+        "i00", "i01", "i02", "i03", "i04", "i05", "i06", "i07", "i08", "i09", "i10", "i11", "i12",
+        "i13", "i14", "i15", "i16", "i17", "i18", "i19", "i20", "i21", "i22", "i23", "i24",
+    ];
+    register_n(&env, &creator, &client, &ids);
+
+    let page = client.list_page(&0u32, &25u32);
+    assert_eq!(page.items.len(), 20);
+    assert_eq!(page.next_cursor, Some(20u32));
 }
 
 #[test]
@@ -775,4 +1021,39 @@ proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
         assert_eq!(r4.metadata, metadata_2);
         assert_eq!(r4.listed, listed);
     }
+}
+
+#[test]
+fn set_terms_hash_works_and_extends_ttl() {
+    let (env, creator, client) = setup();
+    let terms = String::from_str(&env, "hash123");
+    client.set_terms_hash(&creator, &terms);
+    assert_eq!(client.get_terms_hash(&creator), terms);
+
+    let key = DataKey::CreatorTerms(creator.clone());
+    let ttl = env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl, TTL_BUMP_AMOUNT);
+}
+
+#[test]
+fn get_terms_hash_missing_fails() {
+    let (_env, creator, client) = setup();
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
+    );
+}
+
+#[test]
+fn set_terms_hash_rejects_over_max_length() {
+    let (env, creator, client) = setup();
+    let terms = metadata_of_len(&env, MAX_TERMS_HASH_LEN + 1);
+    assert_eq!(
+        client.try_set_terms_hash(&creator, &terms),
+        Err(Ok(Error::TermsHashTooLong))
+    );
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
+    );
 }
