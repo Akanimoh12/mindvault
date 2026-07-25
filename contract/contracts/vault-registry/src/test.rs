@@ -884,8 +884,92 @@ fn invalid_tag_rejected() {
     assert_eq!(client.try_set_tags(&id, &bad), Err(Ok(Error::InvalidTag)));
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+#[test]
+fn creator_resource_count_starts_at_zero() {
+    let (env, creator, client) = setup();
+    assert_eq!(client.creator_resource_count(&creator), 0);
+}
+
+#[test]
+fn creator_resource_count_increments_on_register() {
+    let (env, creator, client) = setup();
+    client.register(
+        &creator,
+        &String::from_str(&env, "r1"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.creator_resource_count(&creator), 1);
+
+    client.register(
+        &creator,
+        &String::from_str(&env, "r2"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.creator_resource_count(&creator), 2);
+
+    // Failed duplicate does not inflate count.
+    let dup = String::from_str(&env, "r1");
+    assert_eq!(
+        client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "m"), &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.creator_resource_count(&creator), 2);
+}
+
+#[test]
+fn creator_resource_count_moves_on_transfer_ownership() {
+    let (env, creator, client) = setup();
+    let new_owner = Address::generate(&env);
+
+    client.register(
+        &creator,
+        &String::from_str(&env, "r1"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &String::from_str(&env, "r2"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    assert_eq!(client.creator_resource_count(&creator), 2);
+    assert_eq!(client.creator_resource_count(&new_owner), 0);
+
+    client.transfer_ownership(&String::from_str(&env, "r1"), &new_owner);
+
+    assert_eq!(client.creator_resource_count(&creator), 1);
+    assert_eq!(client.creator_resource_count(&new_owner), 1);
+
+    // Global count stays monotonic.
+    assert_eq!(client.count(), 2);
+}
+
+#[test]
+fn creator_resource_count_zero_for_unrelated_creator() {
+    let (env, creator_a, client) = setup();
+    let creator_b = Address::generate(&env);
+
+    client.register(
+        &creator_a,
+        &String::from_str(&env, "r1"),
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Creator B never registered anything; 0 expected.
+    assert_eq!(client.creator_resource_count(&creator_b), 0);
+}
+
+proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
         id_str in r"[a-zA-Z0-9_-]{1,32}",
