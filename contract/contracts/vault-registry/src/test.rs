@@ -760,6 +760,9 @@ fn list_listed_limit_capped_at_20() {
 
     let page = client.list_listed(&0u32, &25u32);
     assert_eq!(page.len(), 20);
+}
+
+#[test]
 fn list_page_empty_is_end_of_list() {
     let (_env, _creator, client) = setup();
     let page = client.list_page(&0u32, &20u32);
@@ -1250,8 +1253,10 @@ fn creator_resource_count_zero_for_unrelated_creator() {
     // Creator B never registered anything; 0 expected.
     assert_eq!(client.creator_resource_count(&creator_b), 0);
 }
+}
 
-proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
         id_str in r"[a-zA-Z0-9_-]{1,32}",
@@ -1338,4 +1343,32 @@ fn set_terms_hash_rejects_over_max_length() {
         client.try_get_terms_hash(&creator),
         Err(Ok(Error::NotFound))
     );
+}
+
+#[test]
+fn initialize_sets_admin() {
+    let (env, creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn initialize_duplicate_rejected() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let other = Address::generate(&env);
+    assert_eq!(
+        client.try_initialize(&other),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+    // Original admin preserved.
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn admin_uninitialized_returns_not_found() {
+    let (_env, _creator, client) = setup();
+    assert_eq!(client.try_admin(), Err(Ok(Error::NotFound)));
 }
