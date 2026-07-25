@@ -23,10 +23,13 @@ reads the canonical resource entry here.
 | `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
 | `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
 | `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
-| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order. |
+| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order (body only; prefer `list_page` for cursors). |
+| `list_page(cursor, limit)` | — | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20) | `CatalogPage` | Paginated page with `items` + `next_cursor` (`None` = end-of-list). |
 | `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
 | `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
 | `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
+| `set_terms_hash(creator, terms_hash)` | `creator` | `creator: Address` — creator address; `terms_hash: String` — max 64 bytes | `Result<(), Error>` | Store a hash of accepted marketplace terms for the creator. |
+| `get_terms_hash(creator)` | — | `creator: Address` — creator address | `Result<String, Error>` | Fetch a creator's marketplace terms hash. Errors `NotFound` if absent. |
 
 ### Error codes
 
@@ -36,6 +39,8 @@ reads the canonical resource entry here.
 | `2` | `NotFound` | No resource matches the given `id`. |
 | `3` | `InvalidPrice` | Price is `<= 0`. |
 | `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `5` | `InvalidTag` | The provided tags list or string length is invalid. |
+| `6` | `TermsHashTooLong` | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes). |
 
 ### Events
 
@@ -49,6 +54,7 @@ kind, the second carries the affected resource id.
 | `updmeta` | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds |
 | `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
 | `setlisted` | `listed: bool` | `set_listed()` (and `delist()`) succeeds |
+| `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
 
 The `updmeta` event carries structured data so that off-chain indexers can build
 a full audit trail without querying historical ledger state:
@@ -70,19 +76,65 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 
 ```rust
 pub struct Resource {
-    pub id: String,       // unique cuid2, matches server resource ID
+    pub id: String,       // unique resource ID (1–24 lowercase letters/digits), matches server resource ID
     pub creator: Address, // current owner's Stellar address
     pub price: i128,      // price in USDC stroops (7 decimals)
-    pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
+    pub metadata: String, // pointer (supported URI or content-hash form), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>,// discovery labels (e.g. "dataset", "research")
 }
 ```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `register(...)` | Register a new resource with tags. |
+| `set_price(id, price)` | Update a resource's price. |
+| `update_metadata(id, metadata)` | Update the metadata pointer. |
+| `set_tags(id, tags)` | Replace discovery tags. |
+| `transfer_ownership(id, new_creator)` | Change resource owner. |
+| `set_listed(id, listed)` | Set listing state manually. |
+| `delist(id)` | Convenience for `set_listed(id, false)`. |
+| `list(start, limit)` | Paginated list of **all** resources in insertion order, capped at `20`. |
+| `list_listed(start, limit)` | Paginated list of **listed-only** resources in insertion order, capped at `20`. Skips delisted resources; relisted resources reappear on subsequent calls. |
+| `get(id)` | Fetch a single resource by ID. |
+| `exists(id)` | Whether a resource is registered. |
+| `get_owner(id)` | Fetch resource owner. |
+| `count()` | Total successfully registered resources. |
+    pub tags: Vec<String>,// discovery labels (max 8 tags, each 1–32 bytes)
+}
+```
+
+### Catalog page (cursor primitive)
+
+```rust
+pub struct CatalogPage {
+    pub items: Vec<Resource>,     // this page of resources (insertion order)
+    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
+}
+```
+
+Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
+recomputing offsets from `items.len()`. `list(start, limit)` remains available and
+returns only the `items` body for existing callers.
 
 ### Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
+| `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash in bytes. |
+
+### WASM Size Budget
+
+To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI. 
+
+Currently, the limit is **10,240 bytes (10 KB)**. 
+
+If your genuine feature additions cause the CI to fail with a size limit error, please raise the `MAX_SIZE` variable directly within `.github/workflows/contract-ci.yml` and explicitly document why the growth was necessary in your PR description.
+
+Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`, and content-hash prefixes such as `sha256:` or `0x`. |
 
 ### Breaking change: tags on `register` (v2)
 
@@ -94,6 +146,17 @@ pub struct Resource {
 (`CONTRACT_WASM=... pnpm contract:bindings`), and update every `register` call site to
 include `tags` (use `[]` for resources without labels). Server-side filtering by tag is
 a follow-up; tags are stored on-chain for catalog use.
+
+### Generating Bindings
+
+The TypeScript client bindings must remain in sync with the contract interface. If you modify the contract signature, you **must** regenerate the bindings:
+
+```bash
+CONTRACT_WASM=contract/target/wasm32v1-none/release/vault_registry.wasm pnpm contract:bindings
+```
+
+> [!IMPORTANT]
+> CI strictly enforces binding freshness. If you forget to run this script and commit the updated `packages/registry-client/src/generated/index.ts` file, the `Contract CI` workflow will fail.
 
 ### Develop
 
