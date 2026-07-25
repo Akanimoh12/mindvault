@@ -157,13 +157,19 @@ impl VaultRegistry {
     }
 
     /// Set the listing state of a resource. Only the creator may call this.
+    ///
+    /// Emits a `setlisted` event with data `(old_listed, new_listed)` so
+    /// listeners can distinguish a delist, relist, or no-op transition without
+    /// needing to query additional state. The event is always emitted, even
+    /// when the new value equals the old value.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        let old_listed = resource.listed;
         resource.listed = listed;
         Self::save(&env, &resource);
         env.events()
-            .publish((symbol_short!("setlisted"), id), listed);
+            .publish((symbol_short!("setlisted"), id), (old_listed, listed));
         Ok(())
     }
 
