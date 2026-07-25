@@ -23,7 +23,8 @@ reads the canonical resource entry here.
 | `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
 | `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
 | `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
-| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order. |
+| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order (body only; prefer `list_page` for cursors). |
+| `list_page(cursor, limit)` | — | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20) | `CatalogPage` | Paginated page with `items` + `next_cursor` (`None` = end-of-list). |
 | `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
 | `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
 | `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
@@ -69,8 +70,22 @@ pub struct Resource {
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>,// discovery labels (max 8 tags, each 1–32 bytes)
 }
 ```
+
+### Catalog page (cursor primitive)
+
+```rust
+pub struct CatalogPage {
+    pub items: Vec<Resource>,     // this page of resources (insertion order)
+    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
+}
+```
+
+Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
+recomputing offsets from `items.len()`. `list(start, limit)` remains available and
+returns only the `items` body for existing callers.
 
 ### Constants
 
