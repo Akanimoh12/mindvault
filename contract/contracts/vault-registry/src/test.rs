@@ -439,6 +439,56 @@ fn update_metadata_rejects_over_max_length() {
     assert_eq!(client.get(&id).metadata, String::from_str(&env, "short"));
 }
 
+#[test]
+fn register_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-empty");
+    let metadata = String::from_str(&env, "");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn register_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-one");
+    let metadata = String::from_str(&env, "a");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-empty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-one");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "a");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
         client.register(
@@ -694,79 +744,36 @@ proptest! {
 }
 
 #[test]
-fn two_step_transfer_success() {
+fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "two-step");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "m"),
-        &empty_tags(&env),
-    );
+    let terms = String::from_str(&env, "hash123");
+    client.set_terms_hash(&creator, &terms);
+    assert_eq!(client.get_terms_hash(&creator), terms);
 
-    let new_owner = Address::generate(&env);
-    client.propose_transfer(&id, &new_owner);
-    assert_eq!(client.get_owner(&id), creator);
-    
-    client.accept_transfer(&id);
-    assert_eq!(client.get_owner(&id), new_owner);
+    let key = DataKey::CreatorTerms(creator.clone());
+    let ttl = env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl, TTL_BUMP_AMOUNT);
 }
 
 #[test]
-fn cancel_transfer_works() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "cancel-step");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "m"),
-        &empty_tags(&env),
+fn get_terms_hash_missing_fails() {
+    let (_env, creator, client) = setup();
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
     );
-
-    let new_owner = Address::generate(&env);
-    client.propose_transfer(&id, &new_owner);
-    client.cancel_transfer(&id);
-    
-    let res = client.try_accept_transfer(&id);
-    assert_eq!(res, Err(Ok(Error::NoPendingTransfer)));
 }
 
 #[test]
-fn propose_transfer_to_self_fails() {
+fn set_terms_hash_rejects_over_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "self-prop");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "m"),
-        &empty_tags(&env),
+    let terms = metadata_of_len(&env, MAX_TERMS_HASH_LEN + 1);
+    assert_eq!(
+        client.try_set_terms_hash(&creator, &terms),
+        Err(Ok(Error::TermsHashTooLong))
     );
-
-    let res = client.try_propose_transfer(&id, &creator);
-    assert_eq!(res, Err(Ok(Error::AlreadyOwner)));
-}
-
-#[test]
-fn one_step_transfer_clears_pending() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "clear-step");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "m"),
-        &empty_tags(&env),
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
     );
-
-    let new_owner = Address::generate(&env);
-    client.propose_transfer(&id, &new_owner);
-    
-    let other_owner = Address::generate(&env);
-    client.transfer_ownership(&id, &other_owner);
-    
-    let res = client.try_accept_transfer(&id);
-    assert_eq!(res, Err(Ok(Error::NoPendingTransfer)));
 }

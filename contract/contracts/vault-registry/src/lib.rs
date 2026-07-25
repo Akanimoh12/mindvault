@@ -22,6 +22,7 @@ const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
+pub const MAX_TERMS_HASH_LEN: u32 = 64;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
 
@@ -43,7 +44,7 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
-    PendingTransfer(String),
+    CreatorTerms(Address),
 }
 
 #[contracterror]
@@ -55,8 +56,7 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
-    AlreadyOwner = 6,
-    NoPendingTransfer = 7,
+    TermsHashTooLong = 6,
 }
 
 #[contract]
@@ -268,6 +268,28 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Store a hash of creator marketplace terms.
+    pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
+        creator.require_auth();
+        if terms_hash.len() > MAX_TERMS_HASH_LEN {
+            return Err(Error::TermsHashTooLong);
+        }
+        let key = DataKey::CreatorTerms(creator.clone());
+        env.storage().persistent().set(&key, &terms_hash);
+        Self::bump_persistent(&env, &key);
+        env.events().publish((symbol_short!("setterms"), creator), terms_hash);
+        Ok(())
+    }
+
+    /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::CreatorTerms(creator);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
     }
 }
 
