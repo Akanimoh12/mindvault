@@ -89,7 +89,7 @@ The vault-registry is a Soroban smart contract deployed on Stellar. It is the **
 
 Anyone can read this data directly from the Soroban RPC without going through the MindVault API. The `list(start, limit)` method returns pages of resources in insertion order, enabling a full catalog to be built from chain with no off-chain index.
 
-Mutations (`register`, `set_price`, `update_metadata`, `transfer_ownership`, `propose_transfer`, `cancel_transfer`, `set_listed`) require the current creator's Soroban `require_auth` signature (while `accept_transfer` requires the pending owner's signature). Ownership transfers support an optional two-step process (propose and accept) to prevent accidental transfers to incorrect addresses. The server builds unsigned transactions that the creator signs client-side; the platform key never touches a creator's funds or ownership.
+Mutations (`register`, `set_price`, `update_metadata`, `transfer_ownership`, `set_listed`) all require the creator's Soroban `require_auth` signature. Attempting to transfer ownership to the current owner is protected against and will return a deterministic error. The server builds unsigned transactions that the creator signs client-side; the platform key never touches a creator's funds or ownership.
 
 **Key properties of this layer:**
 
