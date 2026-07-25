@@ -11,7 +11,6 @@ import {
   networks as registryNetworks,
   normalizeX402Network,
   resolveStellarNetwork,
-  validateNetworkConfig,
   X402_NETWORK_IDS,
   type Resource,
 } from "@mindvault/registry-client";
@@ -30,6 +29,19 @@ import {
   STATE_VERSION,
   isValidProfileName,
   migrateState,
+import { cacheStalenessNotice } from "./cacheStaleness.js";
+import {
+  collectStartupDiagnostics,
+  formatDiagnostics,
+  hasBlockingDiagnostics,
+} from "./diagnostics.js";
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
+import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
+import {
+  DEFAULT_PROFILE,
+  isValidProfileName,
+  migrateState,
+  STATE_VERSION,
   type AgentWallet,
   type ProfileState,
   type WalletProfile,
@@ -42,20 +54,15 @@ import { exportState, restoreState } from "./stateBackup.js";
 const STELLAR_NETWORK = resolveStellarNetwork(process.env.STELLAR_NETWORK);
 const networkPreset = registryNetworks[STELLAR_NETWORK];
 
-const networkIssues = validateNetworkConfig({
-  stellarNetwork: STELLAR_NETWORK,
-  x402Network: process.env.NETWORK ?? networkPreset.x402Network,
-  sorobanRpcUrl: process.env.SOROBAN_RPC_URL ?? networkPreset.sorobanRpcUrl,
-  horizonUrl: process.env.HORIZON_URL ?? networkPreset.horizonUrl,
-  usdcSacContractId: process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId,
-  registryContractId:
-    process.env.VAULT_REGISTRY_CONTRACT_ID ?? networkPreset.defaultRegistryContractId ?? undefined,
-});
-
-if (networkIssues.length > 0) {
-  const details = networkIssues.map((i) => `${i.field}: ${i.message}`).join("\n");
-  console.error(`MindVault MCP: inconsistent network configuration:\n${details}`);
-  process.exit(1);
+// Startup diagnostics: collect every configuration problem in one pass so the
+// operator sees the full list (with exact variable names and expected values)
+// instead of fixing them one failed launch at a time. Warnings are printed but
+// non-fatal; any error stops the server. Skipped under tests and in mock mode
+// so unit runs and offline local development never exit the process.
+if (!process.env.VITEST && !mockEnabledFromEnv(process.env)) {
+  const diagnostics = collectStartupDiagnostics(process.env);
+  if (diagnostics.length > 0) console.error(formatDiagnostics(diagnostics));
+  if (hasBlockingDiagnostics(diagnostics)) process.exit(1);
 }
 
 const BASE_URL = process.env.MINDVAULT_URL ?? "https://mindvault-hyr3.onrender.com";
@@ -71,13 +78,6 @@ const NETWORK: X402Network = normalizeX402Network(
   process.env.NETWORK ?? networkPreset.x402Network,
 ) as X402Network;
 
-if (!REGISTRY_CONTRACT_ID) {
-  console.error(
-    "MindVault MCP: VAULT_REGISTRY_CONTRACT_ID is required for mainnet. Deploy vault-registry and set the contract ID.",
-  );
-  process.exit(1);
-}
-
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
@@ -91,6 +91,17 @@ function toolMetrics(reset: boolean): string {
   }
   return JSON.stringify(snap, null, 2);
 }
+// Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
+// call and the on-chain registry lookup are served from deterministic in-memory
+// fixtures — no live backend, funded wallet, or network access required. All
+// outbound requests go through `httpFetch`, which is the mock shim in this mode
+// and the global fetch otherwise.
+const MOCK = mockEnabledFromEnv(process.env);
+// In real mode, defer to the global `fetch` at call time (not a captured
+// reference) so a test-stubbed global is still honoured.
+const httpFetch: typeof fetch = MOCK
+  ? createMockFetch()
+  : (input, init) => fetch(input as RequestInfo | URL, init);
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
@@ -238,7 +249,7 @@ loadState();
 async function jsonFetch(
   url: string,
   init?: RequestInit,
-): Promise<{ ok: boolean; status: number; data: any }> {
+): Promise<{ ok: boolean; status: number; data: any; headers: Record<string, string> }> {
   const method = (init?.method ?? "GET").toUpperCase();
   const body =
     typeof init?.body === "string" ? init.body : init?.body ? JSON.stringify(init.body) : undefined;
@@ -248,17 +259,21 @@ async function jsonFetch(
   };
   const headers = signMutatingHeaders(url, method, baseHeaders, body);
 
-  const res = await fetch(url, {
+  const res = await httpFetch(url, {
     ...init,
     method,
     body: body ?? init?.body,
     headers,
   });
+  const responseHeaders: Record<string, string> = {};
+  res.headers.forEach((value, key) => {
+    responseHeaders[key.toLowerCase()] = value;
+  });
   const text = await res.text();
   try {
-    return { ok: res.ok, status: res.status, data: JSON.parse(text) };
+    return { ok: res.ok, status: res.status, data: JSON.parse(text), headers: responseHeaders };
   } catch {
-    return { ok: res.ok, status: res.status, data: text };
+    return { ok: res.ok, status: res.status, data: text, headers: responseHeaders };
   }
 }
 
@@ -286,17 +301,24 @@ function makePaidFetch(wallet: AgentWallet) {
   const signer = createEd25519Signer(wallet.secretKey, NETWORK);
   const scheme = new ExactStellarScheme(signer);
   const client = new x402Client().register(NETWORK, scheme);
-  return wrapFetchWithPayment(fetch, client);
+  return wrapFetchWithPayment(httpFetch, client);
+}
+
+/** Fetch an account's USDC and native (XLM) balances from Horizon. */
+async function getAccountBalances(
+  publicKey: string,
+): Promise<{ usdc: string; native: string; funded: boolean }> {
+  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  if (!res.ok) return { usdc: "0", native: "0", funded: false };
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
+  const native = balances.find((b) => b.asset_type === "native");
+  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
 }
 
 async function getUsdcBalance(publicKey: string): Promise<string> {
-  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
-  if (!res.ok) return "0";
-  const data: any = await res.json();
-  const b = (data.balances ?? []).find(
-    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
-  );
-  return b?.balance ?? "0";
+  return (await getAccountBalances(publicKey)).usdc;
 }
 
 function formatResource(r: any): string {
@@ -379,7 +401,7 @@ async function insufficientFundsMessage(
 export async function txStatus(txHash: string): Promise<string> {
   const hash = (txHash ?? "").trim();
   if (!hash) return "Provide a transaction hash to look up.";
-  const res = await fetch(SOROBAN_RPC_URL, {
+  const res = await httpFetch(SOROBAN_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -492,8 +514,12 @@ export async function browse(): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources`);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
   const items: any[] = res.data;
-  if (items.length === 0) return "No resources listed yet.";
-  return items.map(formatResource).join("\n\n");
+  const body =
+    items.length === 0 ? "No resources listed yet." : items.map(formatResource).join("\n\n");
+  // Warn when the catalog may be stale relative to the on-chain registry, based
+  // on the server's cache headers. Silent when there is no cache metadata.
+  const notice = cacheStalenessNotice(res.headers);
+  return notice ? `${body}\n\n${notice}` : body;
 }
 
 export async function search(filtersOrQuery: string | SearchFilters): Promise<string> {
@@ -804,6 +830,7 @@ function stroopsToUsdc(stroops: bigint): string {
 }
 
 async function registryLookup(resourceId: string): Promise<string> {
+  if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -896,6 +923,7 @@ function registryInfo(): string {
  * note when the contract/RPC is unreachable).
  */
 async function checkBindings(): Promise<string> {
+  if (MOCK) return "Mock mode: contract binding check skipped (no live RPC).";
   const result = await checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -903,6 +931,29 @@ async function checkBindings(): Promise<string> {
     network: STELLAR_NETWORK,
   });
   return result.message;
+}
+
+/**
+ * Return the current metrics snapshot as JSON. Only counts, durations, and tool
+ * names are included — never arguments, wallets, or API keys. When metrics are
+ * disabled, returns an actionable note instead of counters. Pass reset=true to
+ * clear counters after reading.
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snapshot.enabled) {
+    return JSON.stringify(
+      {
+        enabled: false,
+        message:
+          "Metrics are disabled. Set MINDVAULT_METRICS=1 (or true/yes/on) and restart the server to collect tool-level metrics.",
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(snapshot, null, 2);
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
@@ -1165,6 +1216,10 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return setupWallet(args.profile as string | undefined);
     case "mindvault_wallet_info":
       return walletInfo();
+    case "mindvault_use_profile":
+      return useProfile(args.name as string);
+    case "mindvault_list_profiles":
+      return listProfiles();
     case "mindvault_browse":
       return browse();
     case "mindvault_search": {
@@ -1194,6 +1249,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return agentStatus();
     case "mindvault_registry_info":
       return registryInfo();
+    case "mindvault_check_bindings":
+      return checkBindings();
     case "mindvault_registry_lookup":
       return registryLookup(args.resourceId as string);
     case "mindvault_tx_status":
@@ -1294,6 +1351,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+    const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
@@ -1301,10 +1359,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Best-effort startup check: warn on stderr (never fatal, never blocks) when the
-// installed bindings drift from the deployed contract. Skipped under tests so it
-// never makes a real network call. Errors (e.g. offline) are swallowed — the
-// mindvault_check_bindings tool gives operators an on-demand, detailed report.
-if (!process.env.VITEST) {
+// installed bindings drift from the deployed contract. Skipped under tests and
+// mock mode so it never makes a real network call. Errors (e.g. offline) are
+// swallowed — the mindvault_check_bindings tool gives operators a detailed report.
+if (!process.env.VITEST && !MOCK) {
   void checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
