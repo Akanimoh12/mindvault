@@ -455,7 +455,20 @@ impl VaultRegistry {
         if metadata.len() > MAX_METADATA_POINTER_LEN {
             return Err(Error::MetadataTooLong);
         }
-        Ok(())
+
+        let metadata_str = metadata.to_string();
+        if metadata_str.starts_with("ipfs://")
+            || metadata_str.starts_with("ar://")
+            || metadata_str.starts_with("https://")
+            || metadata_str.starts_with("http://")
+            || metadata_str.starts_with("sha256:")
+            || metadata_str.starts_with("sha-256:")
+            || metadata_str.starts_with("0x")
+        {
+            Ok(())
+        } else {
+            Err(Error::InvalidMetadataPointer)
+        }
     }
 
     fn validate_tags(_env: &Env, tags: &Vec<String>) -> Result<(), Error> {

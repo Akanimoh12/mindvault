@@ -68,7 +68,7 @@ pub struct Resource {
     pub id: String,       // unique resource ID (1–24 lowercase letters/digits), matches server resource ID
     pub creator: Address, // current owner's Stellar address
     pub price: i128,      // price in USDC stroops (7 decimals)
-    pub metadata: String, // pointer (IPFS URI, content hash, or JSON anchor), max 512 bytes
+    pub metadata: String, // pointer (supported URI or content-hash form), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
     pub tags: Vec<String>,// discovery labels (e.g. "dataset", "research")
 }
@@ -122,6 +122,8 @@ To prevent unexpected size growth from landing silently, this contract enforces 
 Currently, the limit is **10,240 bytes (10 KB)**. 
 
 If your genuine feature additions cause the CI to fail with a size limit error, please raise the `MAX_SIZE` variable directly within `.github/workflows/contract-ci.yml` and explicitly document why the growth was necessary in your PR description.
+
+Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`, and content-hash prefixes such as `sha256:` or `0x`. |
 
 ### Breaking change: tags on `register` (v2)
 

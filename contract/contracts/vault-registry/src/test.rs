@@ -65,7 +65,7 @@ fn count_tracks_multiple_successful_registrations() {
             &creator,
             &String::from_str(&env, id),
             &100i128,
-            &String::from_str(&env, "m"),
+            &String::from_str(&env, "ipfs://m"),
             &empty_tags(&env),
         );
     }
@@ -78,7 +78,7 @@ fn count_tracks_multiple_successful_registrations() {
             &creator,
             &dup,
             &100i128,
-            &String::from_str(&env, "m"),
+            &String::from_str(&env, "ipfs://m"),
             &empty_tags(&env)
         ),
         Err(Ok(Error::AlreadyRegistered))
@@ -90,7 +90,7 @@ fn count_tracks_multiple_successful_registrations() {
 fn duplicate_registration_fails() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "dup");
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
 
     let res = client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
@@ -102,7 +102,7 @@ fn duplicate_registration_fails() {
 fn zero_or_negative_price_rejected() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "free");
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
 
     assert_eq!(
         client.try_register(&creator, &id, &0i128, &metadata, &empty_tags(&env)),
@@ -163,7 +163,7 @@ fn set_price_updates_value() {
         &creator,
         &id,
         &1_000_000i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -184,7 +184,7 @@ fn update_metadata_changes_pointer() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "old"),
+        &String::from_str(&env, "https://example.com/old"),
         &empty_tags(&env),
     );
 
@@ -279,7 +279,7 @@ fn transfer_ownership_keeps_count_and_order() {
             &creator,
             &String::from_str(&env, id),
             &100i128,
-            &String::from_str(&env, "m"),
+            &String::from_str(&env, "ipfs://m"),
             &empty_tags(&env),
         );
     }
@@ -325,7 +325,7 @@ fn get_owner_returns_creator() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -366,7 +366,7 @@ fn set_listed_requires_creator_auth() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -400,7 +400,7 @@ fn list_returns_all_in_insertion_order() {
             &creator,
             &String::from_str(&env, id),
             &100i128,
-            &String::from_str(&env, "m"),
+            &String::from_str(&env, "ipfs://m"),
             &empty_tags(&env),
         );
     }
@@ -413,8 +413,12 @@ fn list_returns_all_in_insertion_order() {
 }
 
 fn metadata_of_len(env: &Env, len: u32) -> String {
-    let s = "a".repeat(len as usize);
-    String::from_str(env, &s)
+    let prefix = "ipfs://";
+    let prefix_len = prefix.len();
+    assert!(len >= prefix_len as u32);
+    let body_len = len - prefix_len as u32;
+    let body = "a".repeat(body_len as usize);
+    String::from_str(env, &(prefix.to_string() + &body))
 }
 
 #[test]
@@ -462,7 +466,7 @@ fn update_metadata_rejects_over_max_length() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "short"),
+        &String::from_str(&env, "ar://short"),
         &empty_tags(&env),
     );
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
@@ -470,7 +474,7 @@ fn update_metadata_rejects_over_max_length() {
         client.try_update_metadata(&id, &metadata),
         Err(Ok(Error::MetadataTooLong))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "short"));
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ar://short"));
 }
 
 #[test]
@@ -529,7 +533,7 @@ fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, id
             creator,
             &String::from_str(env, id),
             &100i128,
-            &String::from_str(env, "m"),
+            &String::from_str(env, "ipfs://m"),
             &empty_tags(env),
         );
     }
@@ -564,7 +568,7 @@ fn list_start_beyond_count_returns_empty() {
         &creator,
         &String::from_str(&env, "x"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -580,7 +584,7 @@ fn register_extends_resource_storage_ttl() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     assert_eq!(
@@ -622,13 +626,13 @@ fn update_metadata_reextends_resource_ttl() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "old"),
+        &String::from_str(&env, "https://example.com/old"),
         &empty_tags(&env),
     );
     env.ledger()
         .set_sequence_number(env.ledger().sequence() + DAY_IN_LEDGERS);
 
-    client.update_metadata(&id, &String::from_str(&env, "new"));
+    client.update_metadata(&id, &String::from_str(&env, "https://example.com/new"));
     assert_eq!(
         resource_storage_ttl(&env, &client.address, &id),
         TTL_BUMP_AMOUNT
@@ -866,10 +870,23 @@ fn set_tags_updates_value_without_touching_metadata() {
 }
 
 #[test]
+fn invalid_metadata_pointer_rejected() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "bad-pointer");
+    let metadata = String::from_str(&env, "not-a-supported-pointer");
+
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
 fn invalid_tag_rejected() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "bad-tag");
-    let metadata = String::from_str(&env, "m");
+    let metadata = String::from_str(&env, "ipfs://m");
     let empty = String::from_str(&env, "");
     let mut bad = Vec::new(&env);
     bad.push_back(empty);
@@ -986,8 +1003,8 @@ proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
         let creator = Address::generate(&env);
 
         let id = String::from_str(&env, &id_str);
-        let metadata = String::from_str(&env, &meta_str);
-        let metadata_2 = String::from_str(&env, &meta_str_2);
+        let metadata = String::from_str(&env, &format!("ipfs://{}", meta_str));
+        let metadata_2 = String::from_str(&env, &format!("https://{}", meta_str_2));
 
         // 1. Register resource with initial metadata
         client.register(&creator, &id, &price, &metadata, &empty_tags(&env));
