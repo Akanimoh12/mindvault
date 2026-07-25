@@ -3,8 +3,8 @@
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger as _},
-    Address, Env, String, Vec,
+    testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+    Address, Env, String, TryFromVal, Vec,
 };
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -901,6 +901,150 @@ fn invalid_tag_rejected() {
     assert_eq!(client.try_set_tags(&id, &bad), Err(Ok(Error::InvalidTag)));
 }
 
+// ---------------------------------------------------------------------------
+// update_metadata event tests
+// ---------------------------------------------------------------------------
+
+/// Extract all "updmeta" events emitted by `contract_id` from the environment,
+/// decoded as `MetadataUpdateEvent`.
+fn collect_updmeta_events(
+    env: &Env,
+    contract_id: &soroban_sdk::Address,
+) -> soroban_sdk::Vec<MetadataUpdateEvent> {
+    use soroban_sdk::{FromVal, Symbol};
+    let all = env.events().all();
+    let mut result: soroban_sdk::Vec<MetadataUpdateEvent> = soroban_sdk::Vec::new(env);
+    for i in 0..all.len() {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != *contract_id || topics.len() < 1 {
+            continue;
+        }
+        // topics.get(0) is a Val. Try to decode it as a Symbol and compare.
+        let first_topic_val: soroban_sdk::Val = topics.get(0).unwrap();
+        let Ok(sym) = Symbol::try_from_val(env, &first_topic_val) else {
+            continue;
+        };
+        if sym != symbol_short!("updmeta") {
+            continue;
+        }
+        let event = MetadataUpdateEvent::from_val(env, &data);
+        result.push_back(event);
+    }
+    result
+}
+
+#[test]
+fn update_metadata_emits_structured_event_with_old_and_new() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "event-test");
+    let old_meta = String::from_str(&env, "ipfs://QmOld");
+    let new_meta = String::from_str(&env, "ipfs://QmNew");
+
+    client.register(&creator, &id, &100i128, &old_meta, &empty_tags(&env));
+    client.update_metadata(&id, &new_meta);
+
+    let events = collect_updmeta_events(&env, &client.address);
+    assert_eq!(events.len(), 1, "expected exactly one updmeta event");
+
+    let event = events.get(0).unwrap();
+    assert_eq!(event.id, id);
+    assert_eq!(event.old_metadata, old_meta);
+    assert_eq!(event.new_metadata, new_meta);
+}
+
+#[test]
+fn update_metadata_event_old_metadata_matches_prior_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-chain");
+    let meta_v1 = String::from_str(&env, "ipfs://QmV1");
+    let meta_v2 = String::from_str(&env, "ipfs://QmV2");
+    let meta_v3 = String::from_str(&env, "ipfs://QmV3");
+
+    client.register(&creator, &id, &100i128, &meta_v1, &empty_tags(&env));
+
+    // First update: v1 → v2; check event immediately after this invocation.
+    client.update_metadata(&id, &meta_v2);
+    {
+        let events = collect_updmeta_events(&env, &client.address);
+        assert_eq!(events.len(), 1, "expected one updmeta event after first update");
+        let e = events.get(0).unwrap();
+        assert_eq!(e.old_metadata, meta_v1);
+        assert_eq!(e.new_metadata, meta_v2);
+    }
+
+    // Second update: v2 → v3; old_metadata in the event must be v2.
+    client.update_metadata(&id, &meta_v3);
+    {
+        let events = collect_updmeta_events(&env, &client.address);
+        assert_eq!(events.len(), 1, "expected one updmeta event after second update");
+        let e = events.get(0).unwrap();
+        assert_eq!(e.old_metadata, meta_v2);
+        assert_eq!(e.new_metadata, meta_v3);
+    }
+}
+
+#[test]
+fn update_metadata_event_id_matches_resource_id() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-id-check");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://QmEvtId"));
+
+    let events = collect_updmeta_events(&env, &client.address);
+    assert_eq!(events.len(), 1);
+    let event = events.get(0).unwrap();
+    assert_eq!(event.id, id);
+}
+
+#[test]
+fn update_metadata_failed_validation_emits_no_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-no-emit");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    let too_long = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
+    assert_eq!(
+        client.try_update_metadata(&id, &too_long),
+        Err(Ok(Error::MetadataTooLong))
+    );
+
+    // No updmeta event should be emitted when the call fails.
+    let events = collect_updmeta_events(&env, &client.address);
+    assert_eq!(events.len(), 0, "failed update_metadata must not emit any updmeta event");
+}
+
+#[test]
+fn update_metadata_state_not_mutated_on_failed_call() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "no-state-change");
+    let original = String::from_str(&env, "ipfs://QmOriginal");
+    client.register(&creator, &id, &100i128, &original, &empty_tags(&env));
+
+    // Attempt an invalid update (too long).
+    let too_long = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
+    let _ = client.try_update_metadata(&id, &too_long);
+
+    // State must be unchanged.
+    let r = client.get(&id);
+    assert_eq!(
+        r.metadata, original,
+        "metadata must not change when update_metadata returns an error"
+    );
+    assert_eq!(r.price, 100i128);
+    assert_eq!(r.creator, creator);
 /// Assert core registry invariants after mixed ops.
 ///
 /// Checks:
