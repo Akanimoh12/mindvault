@@ -439,6 +439,56 @@ fn update_metadata_rejects_over_max_length() {
     assert_eq!(client.get(&id).metadata, String::from_str(&env, "short"));
 }
 
+#[test]
+fn register_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-empty");
+    let metadata = String::from_str(&env, "");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn register_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-one");
+    let metadata = String::from_str(&env, "a");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-empty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
+#[test]
+fn update_metadata_accepts_one_character_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "meta-upd-one");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "short"),
+        &empty_tags(&env),
+    );
+    let metadata = String::from_str(&env, "a");
+    client.update_metadata(&id, &metadata);
+    assert_eq!(client.get(&id).metadata, metadata);
+}
+
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
         client.register(
@@ -694,28 +744,36 @@ proptest! {
 }
 
 #[test]
-fn profile_crud_works() {
+fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();
-    
-    let res = client.try_get_profile(&creator);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
-    
-    let metadata = String::from_str(&env, "ipfs://qm123");
-    client.update_profile(&creator, &metadata);
-    
-    let read_metadata = client.get_profile(&creator);
-    assert_eq!(read_metadata, metadata);
+    let terms = String::from_str(&env, "hash123");
+    client.set_terms_hash(&creator, &terms);
+    assert_eq!(client.get_terms_hash(&creator), terms);
+
+    let key = DataKey::CreatorTerms(creator.clone());
+    let ttl = env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl, TTL_BUMP_AMOUNT);
 }
 
 #[test]
-fn profile_rejects_over_max_length() {
+fn get_terms_hash_missing_fails() {
+    let (_env, creator, client) = setup();
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
+    );
+}
+
+#[test]
+fn set_terms_hash_rejects_over_max_length() {
     let (env, creator, client) = setup();
-    
-    let mut bytes = [0u8; 513];
-    bytes.fill(b'a');
-    let s_str = core::str::from_utf8(&bytes).unwrap();
-    let metadata = String::from_str(&env, s_str);
-    
-    let res = client.try_update_profile(&creator, &metadata);
-    assert_eq!(res, Err(Ok(Error::MetadataTooLong)));
+    let terms = metadata_of_len(&env, MAX_TERMS_HASH_LEN + 1);
+    assert_eq!(
+        client.try_set_terms_hash(&creator, &terms),
+        Err(Ok(Error::TermsHashTooLong))
+    );
+    assert_eq!(
+        client.try_get_terms_hash(&creator),
+        Err(Ok(Error::NotFound))
+    );
 }

@@ -22,6 +22,7 @@ const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
+pub const MAX_TERMS_HASH_LEN: u32 = 64;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
 
@@ -43,7 +44,7 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
-    Profile(Address),
+    CreatorTerms(Address),
 }
 
 #[contracterror]
@@ -55,6 +56,7 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
+    TermsHashTooLong = 6,
 }
 
 #[contract]
@@ -216,21 +218,26 @@ impl VaultRegistry {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
 
-    /// Update the creator's profile metadata pointer.
-    pub fn update_profile(env: Env, creator: Address, metadata: String) -> Result<(), Error> {
+    /// Store a hash of creator marketplace terms.
+    pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
-        Self::validate_metadata_pointer(&metadata)?;
-        let key = DataKey::Profile(creator.clone());
-        env.storage().persistent().set(&key, &metadata);
+        if terms_hash.len() > MAX_TERMS_HASH_LEN {
+            return Err(Error::TermsHashTooLong);
+        }
+        let key = DataKey::CreatorTerms(creator.clone());
+        env.storage().persistent().set(&key, &terms_hash);
         Self::bump_persistent(&env, &key);
-        env.events().publish((symbol_short!("updprof"), creator), ());
+        env.events().publish((symbol_short!("setterms"), creator), terms_hash);
         Ok(())
     }
 
-    /// Read a creator's profile metadata pointer. Errors with `NotFound` if none exists.
-    pub fn get_profile(env: Env, creator: Address) -> Result<String, Error> {
-        let key = DataKey::Profile(creator);
-        env.storage().persistent().get(&key).ok_or(Error::NotFound)
+    /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::CreatorTerms(creator);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
     }
 }
 
