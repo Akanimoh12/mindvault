@@ -10,6 +10,8 @@
 //! Only the recorded creator can mutate a resource (enforced via
 //! `require_auth`). Ownership can be transferred.
 
+extern crate alloc;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
     String, Val, Vec,
@@ -22,8 +24,7 @@ const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
-/// Max length for resource IDs. The contract expects the server-side cuid2 format.
-pub const MAX_RESOURCE_ID_LEN: u32 = 24;
+pub const MAX_TERMS_HASH_LEN: u32 = 64;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
 
@@ -40,11 +41,24 @@ pub struct Resource {
     pub tags: Vec<String>,
 }
 
+/// One page of the on-chain catalog plus a cursor for the next page.
+///
+/// `next_cursor` is the catalog index to pass back into `list` / `list_page`
+/// as `start`/`cursor`. `None` means end-of-list — clients must not recompute
+/// offsets themselves.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogPage {
+    pub items: Vec<Resource>,
+    pub next_cursor: Option<u32>,
+}
+
 #[contracttype]
 pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
+    CreatorTerms(Address),
 }
 
 #[contracterror]
@@ -56,7 +70,7 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
-    InvalidResourceId = 6,
+    TermsHashTooLong = 6,
 }
 
 #[contract]
@@ -81,6 +95,9 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
         Self::validate_tags(&env, &tags)?;
+        if Self::is_reserved_id(&id) {
+            return Err(Error::ReservedId);
+        }
         let key = DataKey::Resource(id.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::AlreadyRegistered);
@@ -149,15 +166,67 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Hand ownership to a new creator. Only the current creator may call this.
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        if resource.creator == new_creator {
+            return Err(Error::AlreadyOwner);
+        }
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
+        
+        let pending_key = DataKey::PendingTransfer(id.clone());
+        if env.storage().persistent().has(&pending_key) {
+            env.storage().persistent().remove(&pending_key);
+        }
+
         env.events()
             .publish((symbol_short!("transfer"), id), new_creator);
+        Ok(())
+    }
+
+    /// Propose a transfer to a new owner. The new owner must accept it.
+    pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        let resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        if resource.creator == new_creator {
+            return Err(Error::AlreadyOwner);
+        }
+        let key = DataKey::PendingTransfer(id.clone());
+        env.storage().persistent().set(&key, &new_creator);
+        Self::bump_persistent(&env, &key);
+        env.events().publish((symbol_short!("propose"), id), new_creator);
+        Ok(())
+    }
+
+    /// Accept a proposed transfer. Only the pending owner can call this.
+    pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
+        let key = DataKey::PendingTransfer(id.clone());
+        let pending_owner: Address = env.storage().persistent().get(&key).ok_or(Error::NoPendingTransfer)?;
+        pending_owner.require_auth();
+        
+        let mut resource = Self::load(&env, &id)?;
+        resource.creator = pending_owner.clone();
+        Self::save(&env, &resource);
+        
+        env.storage().persistent().remove(&key);
+        
+        env.events().publish((symbol_short!("transfer"), id), pending_owner);
+        Ok(())
+    }
+
+    /// Cancel a proposed transfer. Only the current owner can call this.
+    pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
+        let resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        
+        let key = DataKey::PendingTransfer(id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::NoPendingTransfer);
+        }
+        env.storage().persistent().remove(&key);
+        env.events().publish((symbol_short!("cancel"), id), ());
         Ok(())
     }
 
@@ -179,7 +248,53 @@ impl VaultRegistry {
     }
 
     /// Paginated resource list in insertion order. `limit` is capped at 20.
+    ///
+    /// Kept for callers that only need the page body. Prefer `list_page` when
+    /// the client must know the next cursor / end-of-list without recomputing
+    /// offsets.
     pub fn list(env: Env, start: u32, limit: u32) -> Vec<Resource> {
+        Self::list_page(env, start, limit).items
+    }
+
+    /// Paginated catalog page with next-cursor metadata.
+    ///
+    /// - `cursor` is a 0-based catalog index (same domain as `list`'s `start`).
+    /// - `limit` is capped at 20.
+    /// - `next_cursor` is `Some(next_index)` when more entries may exist after
+    ///   this page, or `None` at end-of-list (including empty catalog / cursor
+    ///   past the end).
+    pub fn list_page(env: Env, cursor: u32, limit: u32) -> CatalogPage {
+        let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let page_size = limit.min(20);
+        let mut items: Vec<Resource> = Vec::new(&env);
+        let mut i = cursor;
+        while i < total && items.len() < page_size {
+            if let Some(id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, String>(&DataKey::Index(i))
+            {
+                if let Some(resource) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Resource>(&DataKey::Resource(id))
+                {
+                    items.push_back(resource);
+                }
+            }
+            i += 1;
+        }
+        let next_cursor = if i < total { Some(i) } else { None };
+        CatalogPage { items, next_cursor }
+    }
+
+    /// Paginated list of resources whose `listed` flag is true, in insertion order.
+    ///
+    /// - Resources are ordered by registration sequence.
+    /// - `limit` is capped at `20`.
+    /// - Delisted resources are skipped; relisted resources will reappear.
+    /// - Returns an empty `Vec` if no listed resources fall in range.
+    pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(20);
         let mut result: Vec<Resource> = Vec::new(&env);
@@ -195,7 +310,9 @@ impl VaultRegistry {
                     .persistent()
                     .get::<DataKey, Resource>(&DataKey::Resource(id))
                 {
-                    result.push_back(resource);
+                    if resource.listed {
+                        result.push_back(resource);
+                    }
                 }
             }
             i += 1;
@@ -225,25 +342,38 @@ impl VaultRegistry {
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
+
+    /// Store a hash of creator marketplace terms.
+    pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
+        creator.require_auth();
+        if terms_hash.len() > MAX_TERMS_HASH_LEN {
+            return Err(Error::TermsHashTooLong);
+        }
+        let key = DataKey::CreatorTerms(creator.clone());
+        env.storage().persistent().set(&key, &terms_hash);
+        Self::bump_persistent(&env, &key);
+        env.events().publish((symbol_short!("setterms"), creator), terms_hash);
+        Ok(())
+    }
+
+    /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::CreatorTerms(creator);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
+    }
 }
 
 impl VaultRegistry {
-    fn validate_resource_id(id: &String) -> Result<(), Error> {
-        let len = id.len();
-        if len == 0 || len > MAX_RESOURCE_ID_LEN {
-            return Err(Error::InvalidResourceId);
+    fn is_reserved_id(id: &String) -> bool {
+        use alloc::string::ToString;
+        let id_str = id.to_string().to_lowercase();
+        match id_str.as_str() {
+            "admin" | "null" | "registry" | "api" | "index" | "root" | "system" => true,
+            _ => false,
         }
-
-        for i in 0..len {
-            let ch = id.get(i).unwrap();
-            let is_lower = ch >= 'a' && ch <= 'z';
-            let is_digit = ch >= '0' && ch <= '9';
-            if !(is_lower || is_digit) {
-                return Err(Error::InvalidResourceId);
-            }
-        }
-
-        Ok(())
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
