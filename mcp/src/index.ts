@@ -23,6 +23,12 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
 import { cacheStalenessNotice } from "./cacheStaleness.js";
 import {
   collectStartupDiagnostics,
@@ -41,6 +47,7 @@ import {
   type WalletProfile,
 } from "./profiles.js";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { exportState, restoreState } from "./stateBackup.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +82,15 @@ const NETWORK: X402Network = normalizeX402Network(
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
 
+/** Snapshot (and optionally reset) opt-in tool metrics. Never includes secrets. */
+function toolMetrics(reset: boolean): string {
+  const snap = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snap.enabled) {
+    return "Metrics disabled. Set MINDVAULT_METRICS=1 on the server to enable.";
+  }
+  return JSON.stringify(snap, null, 2);
+}
 // Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
 // call and the on-chain registry lookup are served from deterministic in-memory
 // fixtures — no live backend, funded wallet, or network access required. All
@@ -127,6 +143,30 @@ export function _setAgentApiKey(k: string | null): void {
 export function _resetProfiles(): void {
   profiles = {};
   activeProfileName = DEFAULT_PROFILE;
+}
+
+/** Apply a restored ProfileState into memory and re-persist (mode 0600). */
+function applyRestoredState(state: ProfileState): void {
+  profiles = state.profiles;
+  activeProfileName = state.activeProfile;
+  saveState();
+}
+
+/** Export encrypted state backup (passphrase-gated). No plaintext secrets in output. */
+export function backupState(passphrase: string): string {
+  const blob = exportState(passphrase);
+  return [
+    "Encrypted state backup ready. Copy the blob below to the new environment.",
+    "Restore with mindvault_restore_state using the same passphrase.",
+    "The blob does not contain plaintext secrets.",
+    "",
+    blob,
+  ].join("\n");
+}
+
+/** Restore state from an encrypted backup. Integrity-checked before any write. */
+export function restoreStateTool(blob: string, passphrase: string): string {
+  return restoreState(blob, passphrase, applyRestoredState);
 }
 
 function loadState(): void {
@@ -1118,6 +1158,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "mindvault_backup_state",
+      description:
+        "Export an encrypted backup of ~/.mindvault/state.json for moving agent environments. Requires a passphrase (min 8 chars). Output is a self-contained ciphertext blob — wallet secret keys and API keys never appear in plaintext. Restore with mindvault_restore_state using the same passphrase. Does not change reset behavior.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          passphrase: {
+            type: "string",
+            description: "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
+          },
+        },
+        required: ["passphrase"],
+      },
+    },
+    {
+      name: "mindvault_restore_state",
+      description:
+        "Restore ~/.mindvault/state.json from an encrypted backup produced by mindvault_backup_state. Validates integrity (wrong passphrase or tampered data fails before any write). Replaces in-memory profiles and re-persists to disk (mode 0600). Existing reset behavior is unchanged.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          blob: {
+            type: "string",
+            description: "Encrypted backup blob from mindvault_backup_state (v1:… format).",
+          },
+          passphrase: {
+            type: "string",
+            description: "Passphrase used when the backup was created (min 8 characters).",
+          },
+        },
+        required: ["blob", "passphrase"],
+      },
+    },
+    {
       name: "mindvault_metrics",
       description:
         "Return opt-in tool-level metrics: per-tool call/error counts and durations, plus payment attempt/failure totals. Enable by setting MINDVAULT_METRICS=1 on the server. Output contains only tool names, counts, and durations — never arguments, wallets, or API keys. Pass reset=true to clear counters after reading.",
@@ -1183,6 +1257,10 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return txStatus(args.txHash as string);
     case "mindvault_reset":
       return resetState(args.all === true);
+    case "mindvault_backup_state":
+      return backupState(args.passphrase as string);
+    case "mindvault_restore_state":
+      return restoreStateTool(args.blob as string, args.passphrase as string);
     case "mindvault_metrics":
       return toolMetrics(args.reset === true);
     default:
@@ -1193,6 +1271,86 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
+    let result: string;
+    switch (name) {
+      case "mindvault_setup_wallet":
+        result = await setupWallet(args.profile as string | undefined);
+        break;
+      case "mindvault_wallet_info":
+        result = await walletInfo();
+        break;
+      case "mindvault_use_profile":
+        result = useProfile(args.name as string);
+        break;
+      case "mindvault_list_profiles":
+        result = listProfiles();
+        break;
+      case "mindvault_browse":
+        result = await browse();
+        break;
+      case "mindvault_search": {
+        const filters = normalizeSearchFilters(args);
+        if (!filters) {
+          result = "Provide a non-empty search query.";
+        } else {
+          result = await search(filters);
+        }
+        break;
+      }
+      case "mindvault_preview":
+        result = await preview(args.resourceId as string);
+        break;
+      case "mindvault_register":
+        result = await register(
+          args.name as string,
+          args.email as string,
+          args.walletAddress as string | undefined,
+        );
+        break;
+      case "mindvault_publish":
+        result = await publish({
+          title: args.title as string,
+          description: args.description as string | undefined,
+          price: args.price as string,
+          externalUrl: args.externalUrl as string,
+        });
+        break;
+      case "mindvault_buy":
+        result = await buy(args.resourceId as string);
+        break;
+      case "mindvault_register_onchain":
+        result = await registerOnchain(args.resourceId as string);
+        break;
+      case "mindvault_agent_status":
+        result = await agentStatus();
+        break;
+      case "mindvault_registry_info":
+        result = registryInfo();
+        break;
+      case "mindvault_check_bindings":
+        result = await checkBindings();
+        break;
+      case "mindvault_registry_lookup":
+        result = await registryLookup(args.resourceId as string);
+        break;
+      case "mindvault_tx_status":
+        result = await txStatus(args.txHash as string);
+        break;
+      case "mindvault_reset":
+        result = resetState(args.all === true);
+        break;
+      case "mindvault_backup_state":
+        result = backupState(args.passphrase as string);
+        break;
+      case "mindvault_restore_state":
+        result = restoreStateTool(args.blob as string, args.passphrase as string);
+        break;
+      case "mindvault_metrics":
+        result = toolMetrics(args.reset === true);
+        break;
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
@@ -1211,7 +1369,7 @@ if (!process.env.VITEST && !MOCK) {
     networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
     network: STELLAR_NETWORK,
   })
-    .then((result) => {
+    .then((result: { status: string; message: string }) => {
       if (result.status === "mismatch") console.error(`MindVault MCP: ${result.message}`);
     })
     .catch(() => {
