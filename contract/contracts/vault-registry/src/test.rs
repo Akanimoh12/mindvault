@@ -901,6 +901,271 @@ fn invalid_tag_rejected() {
     assert_eq!(client.try_set_tags(&id, &bad), Err(Ok(Error::InvalidTag)));
 }
 
+/// Assert core registry invariants after mixed ops.
+///
+/// Checks:
+/// - `count` equals the number of successfully registered ids (monotonic)
+/// - insertion-index order is preserved by `list(0, count)`
+/// - `exists` / `get` / `get_owner` agree with tracked ownership
+/// - listing, tags, and price match the tracked expected state
+fn assert_registry_invariants(
+    client: &VaultRegistryClient,
+    expected_ids: &[String],
+    expected_owners: &[Address],
+    expected_prices: &[i128],
+    expected_listed: &[bool],
+    expected_tags: &[Vec<String>],
+) {
+    let n = expected_ids.len() as u32;
+    assert_eq!(
+        client.count(),
+        n,
+        "count must equal number of successful registrations"
+    );
+
+    let page = client.list(&0u32, &n.max(1));
+    assert_eq!(page.len(), n, "list must return all registered resources");
+    for i in 0..expected_ids.len() {
+        let r = page.get(i as u32).unwrap();
+        assert_eq!(r.id, expected_ids[i], "index order broken at {i}");
+        assert_eq!(r.creator, expected_owners[i], "owner mismatch at {i}");
+        assert_eq!(r.price, expected_prices[i], "price mismatch at {i}");
+        assert_eq!(r.listed, expected_listed[i], "listed mismatch at {i}");
+        assert_eq!(r.tags, expected_tags[i], "tags mismatch at {i}");
+
+        assert!(client.exists(&expected_ids[i]));
+        let got = client.get(&expected_ids[i]);
+        assert_eq!(got, r);
+        assert_eq!(client.get_owner(&expected_ids[i]), expected_owners[i]);
+    }
+}
+
+/// Focused invariant suite: mixed register / transfer / tag / listing / price
+/// ops, asserting core registry invariants after each step. Failure cases are
+/// deterministic and must not corrupt count, index order, ownership, listing,
+/// or tags.
+#[test]
+fn registry_invariant_suite_mixed_ops() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+
+    // Empty registry baseline.
+    assert_eq!(client.count(), 0);
+    assert_eq!(client.list(&0u32, &20u32).len(), 0);
+
+    // ── Step 1: register r0 under alice ──────────────────────────────────────
+    let r0 = String::from_str(&env, "inv-r0");
+    let tags0 = tags(&env, &["dataset"]);
+    client.register(
+        &alice,
+        &r0,
+        &1_000i128,
+        &String::from_str(&env, "ipfs://r0"),
+        &tags0,
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone()],
+        &[alice.clone()],
+        &[1_000],
+        &[true],
+        &[tags0.clone()],
+    );
+
+    // ── Step 2: register r1 under alice ──────────────────────────────────────
+    let r1 = String::from_str(&env, "inv-r1");
+    let empty0 = empty_tags(&env);
+    client.register(
+        &alice,
+        &r1,
+        &2_000i128,
+        &String::from_str(&env, "ipfs://r1"),
+        &empty0,
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[alice.clone(), alice.clone()],
+        &[1_000, 2_000],
+        &[true, true],
+        &[tags0.clone(), empty0.clone()],
+    );
+
+    // ── Step 3: transfer ownership of r0 → bob (count/order unchanged) ────────
+    client.transfer_ownership(&r0, &bob);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[bob.clone(), alice.clone()],
+        &[1_000, 2_000],
+        &[true, true],
+        &[tags0.clone(), empty0.clone()],
+    );
+
+    // ── Step 4: set tags on r1 ───────────────────────────────────────────────
+    let tags1 = tags(&env, &["research", "alpha"]);
+    client.set_tags(&r1, &tags1);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[bob.clone(), alice.clone()],
+        &[1_000, 2_000],
+        &[true, true],
+        &[tags0.clone(), tags1.clone()],
+    );
+
+    // ── Step 5: delist r1 (listing only) ─────────────────────────────────────
+    client.delist(&r1);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[bob.clone(), alice.clone()],
+        &[1_000, 2_000],
+        &[true, false],
+        &[tags0.clone(), tags1.clone()],
+    );
+
+    // ── Step 6: set_price on r0 (bob is owner) ───────────────────────────────
+    client.set_price(&r0, &9_999i128);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[bob.clone(), alice.clone()],
+        &[9_999, 2_000],
+        &[true, false],
+        &[tags0.clone(), tags1.clone()],
+    );
+
+    // ── Step 7: re-list r1 ───────────────────────────────────────────────────
+    client.set_listed(&r1, &true);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone()],
+        &[bob.clone(), alice.clone()],
+        &[9_999, 2_000],
+        &[true, true],
+        &[tags0.clone(), tags1.clone()],
+    );
+
+    // ── Step 8: register r2 under bob ────────────────────────────────────────
+    let r2 = String::from_str(&env, "inv-r2");
+    let tags2 = tags(&env, &["beta"]);
+    client.register(
+        &bob,
+        &r2,
+        &500i128,
+        &String::from_str(&env, "ipfs://r2"),
+        &tags2,
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), bob.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[tags0.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // ── Deterministic failure cases — must not corrupt invariants ────────────
+
+    // Duplicate registration does not change count / order / state.
+    assert_eq!(
+        client.try_register(
+            &alice,
+            &r1,
+            &1i128,
+            &String::from_str(&env, "x"),
+            &empty_tags(&env)
+        ),
+        Err(Ok(Error::AlreadyRegistered))
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), bob.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[tags0.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // Invalid price on set_price leaves prior price intact.
+    assert_eq!(
+        client.try_set_price(&r0, &0i128),
+        Err(Ok(Error::InvalidPrice))
+    );
+    assert_eq!(
+        client.try_set_price(&r0, &-1i128),
+        Err(Ok(Error::InvalidPrice))
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), bob.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[tags0.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // Invalid tags rejected; prior tags preserved.
+    let too_many = tags(
+        &env,
+        &["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9"],
+    );
+    assert_eq!(
+        client.try_set_tags(&r1, &too_many),
+        Err(Ok(Error::InvalidTag))
+    );
+    let empty_tag = {
+        let mut v = Vec::new(&env);
+        v.push_back(String::from_str(&env, ""));
+        v
+    };
+    assert_eq!(
+        client.try_set_tags(&r1, &empty_tag),
+        Err(Ok(Error::InvalidTag))
+    );
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), bob.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[tags0.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // Missing resource lookups are deterministic NotFound.
+    let missing = String::from_str(&env, "no-such-resource");
+    assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
+    assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
+    assert!(!client.exists(&missing));
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), bob.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[tags0.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // Clear tags on r0 (owned by bob) and transfer r2 back to alice.
+    let empty1 = empty_tags(&env);
+    client.set_tags(&r0, &empty1);
+    client.transfer_ownership(&r2, &alice);
+    assert_registry_invariants(
+        &client,
+        &[r0.clone(), r1.clone(), r2.clone()],
+        &[bob.clone(), alice.clone(), alice.clone()],
+        &[9_999, 2_000, 500],
+        &[true, true, true],
+        &[empty1.clone(), tags1.clone(), tags2.clone()],
+    );
+
+    // Final: count is still exactly 3 (no ghost entries from failures).
+    assert_eq!(client.count(), 3);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
 #[test]
 fn creator_resource_count_starts_at_zero() {
     let (env, creator, client) = setup();
