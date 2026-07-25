@@ -89,6 +89,7 @@ The vault-registry is a Soroban smart contract deployed on Stellar. It is the **
 
 Anyone can read this data directly from the Soroban RPC without going through the MindVault API. The `list(start, limit)` method returns pages of resources in insertion order, enabling a full catalog to be built from chain with no off-chain index.
 
+Mutations (`register`, `set_price`, `update_metadata`, `transfer_ownership`, `set_listed`, `update_profile`) all require the creator's Soroban `require_auth` signature. The server builds unsigned transactions that the creator signs client-side; the platform key never touches a creator's funds or ownership.
 Mutations (`register`, `set_price`, `update_metadata`, `transfer_ownership`, `set_listed`) all require the creator's Soroban `require_auth` signature. Attempting to transfer ownership to the current owner is protected against and will return a deterministic error. The server builds unsigned transactions that the creator signs client-side; the platform key never touches a creator's funds or ownership.
 
 **Key properties of this layer:**
@@ -96,6 +97,7 @@ Mutations (`register`, `set_price`, `update_metadata`, `transfer_ownership`, `se
 - Ownership is on-chain and enforced cryptographically — MindVault cannot reassign a resource without the creator's signature.
 - The price the buyer actually pays (read from the contract at 402 time) is the canonical price, not a server-side value that could diverge silently.
 - The `metadata` field anchors content integrity: storing a content hash here lets any client verify the delivered bytes against the registry entry.
+- Creators can attach a mutable profile metadata pointer to their address (`update_profile`, `get_profile`) independent of any single resource for discovery and reputation workflows.
 
 ---
 
