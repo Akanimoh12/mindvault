@@ -10,6 +10,8 @@
 //! Only the recorded creator can mutate a resource (enforced via
 //! `require_auth`). Ownership can be transferred.
 
+extern crate alloc;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
     String, Val, Vec,
@@ -80,6 +82,9 @@ impl VaultRegistry {
         }
         Self::validate_metadata_pointer(&metadata)?;
         Self::validate_tags(&env, &tags)?;
+        if Self::is_reserved_id(&id) {
+            return Err(Error::ReservedId);
+        }
         let key = DataKey::Resource(id.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::AlreadyRegistered);
@@ -145,14 +150,66 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Hand ownership to a new creator. Only the current creator may call this.
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        if resource.creator == new_creator {
+            return Err(Error::AlreadyOwner);
+        }
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
+        
+        let pending_key = DataKey::PendingTransfer(id.clone());
+        if env.storage().persistent().has(&pending_key) {
+            env.storage().persistent().remove(&pending_key);
+        }
+
         env.events()
             .publish((symbol_short!("transfer"), id), new_creator);
+        Ok(())
+    }
+
+    /// Propose a transfer to a new owner. The new owner must accept it.
+    pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        let resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        if resource.creator == new_creator {
+            return Err(Error::AlreadyOwner);
+        }
+        let key = DataKey::PendingTransfer(id.clone());
+        env.storage().persistent().set(&key, &new_creator);
+        Self::bump_persistent(&env, &key);
+        env.events().publish((symbol_short!("propose"), id), new_creator);
+        Ok(())
+    }
+
+    /// Accept a proposed transfer. Only the pending owner can call this.
+    pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
+        let key = DataKey::PendingTransfer(id.clone());
+        let pending_owner: Address = env.storage().persistent().get(&key).ok_or(Error::NoPendingTransfer)?;
+        pending_owner.require_auth();
+        
+        let mut resource = Self::load(&env, &id)?;
+        resource.creator = pending_owner.clone();
+        Self::save(&env, &resource);
+        
+        env.storage().persistent().remove(&key);
+        
+        env.events().publish((symbol_short!("transfer"), id), pending_owner);
+        Ok(())
+    }
+
+    /// Cancel a proposed transfer. Only the current owner can call this.
+    pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
+        let resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        
+        let key = DataKey::PendingTransfer(id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::NoPendingTransfer);
+        }
+        env.storage().persistent().remove(&key);
+        env.events().publish((symbol_short!("cancel"), id), ());
         Ok(())
     }
 
@@ -242,6 +299,15 @@ impl VaultRegistry {
 }
 
 impl VaultRegistry {
+    fn is_reserved_id(id: &String) -> bool {
+        use alloc::string::ToString;
+        let id_str = id.to_string().to_lowercase();
+        match id_str.as_str() {
+            "admin" | "null" | "registry" | "api" | "index" | "root" | "system" => true,
+            _ => false,
+        }
+    }
+
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
         if metadata.len() > MAX_METADATA_POINTER_LEN {
             return Err(Error::MetadataTooLong);
