@@ -54,6 +54,7 @@ import {
   walletInfo,
   useProfile,
   listProfiles,
+  networkProfile,
   _setAgentWallet,
   _setAgentApiKey,
   _resetProfiles,
@@ -947,3 +948,67 @@ describe("wallet_info balance details", () => {
   });
 });
 
+
+// ── networkProfile (#412) ───────────────────────────────────────────────────
+
+describe("networkProfile", () => {
+  it("returns all expected fields in deterministic JSON format", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed).toHaveProperty("stellarNetwork");
+    expect(parsed).toHaveProperty("x402Network");
+    expect(parsed).toHaveProperty("sorobanRpcUrl");
+    expect(parsed).toHaveProperty("horizonUrl");
+    expect(parsed).toHaveProperty("registryContractId");
+    expect(parsed).toHaveProperty("usdcContractId");
+    expect(parsed).toHaveProperty("warnings");
+    expect(Array.isArray(parsed.warnings)).toBe(true);
+  });
+
+  it("reports testnet as stellarNetwork in test environment", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed.stellarNetwork).toBe("testnet");
+  });
+
+  it("includes expected testnet preset values", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    // Test environment uses testnet presets (from mocked registry-client)
+    expect(parsed.sorobanRpcUrl).toBeTruthy();
+    expect(parsed.horizonUrl).toBeTruthy();
+    expect(parsed.registryContractId).toBeTruthy();
+    expect(parsed.usdcContractId).toBeTruthy();
+  });
+
+  it("returns empty warnings array when no env overrides present", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    // In default test environment with no custom env vars
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("produces valid JSON that can be parsed", () => {
+    const result = networkProfile();
+    expect(() => JSON.parse(result)).not.toThrow();
+  });
+
+  it("formats output with indentation for readability", () => {
+    const result = networkProfile();
+    // JSON.stringify with null, 2 produces indented output
+    expect(result).toContain("\n");
+    expect(result).toMatch(/{\s+"stellarNetwork":/);
+  });
+
+  it("includes x402Network field with valid network identifier", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed.x402Network).toBeTruthy();
+    expect(typeof parsed.x402Network).toBe("string");
+  });
+});

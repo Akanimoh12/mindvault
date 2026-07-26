@@ -1057,6 +1057,52 @@ function registryInfo(): string {
 }
 
 /**
+ * Report the current Stellar and x402 network configuration in use by this MCP
+ * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
+ * USDC contract IDs, and warnings for environment variable overrides that
+ * diverge from presets.
+ */
+export function networkProfile(): string {
+  const warnings: string[] = [];
+
+  // Detect custom overrides that differ from the preset
+  const usdcContractId = process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId;
+  if (process.env.USDC_CONTRACT_ID && process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId) {
+    warnings.push(`USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`);
+  }
+  if (process.env.SOROBAN_RPC_URL && process.env.SOROBAN_RPC_URL !== networkPreset.sorobanRpcUrl) {
+    warnings.push(`SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`);
+  }
+  if (process.env.HORIZON_URL && process.env.HORIZON_URL !== networkPreset.horizonUrl) {
+    warnings.push(`HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`);
+  }
+  if (
+    process.env.VAULT_REGISTRY_CONTRACT_ID &&
+    networkPreset.defaultRegistryContractId &&
+    process.env.VAULT_REGISTRY_CONTRACT_ID !== networkPreset.defaultRegistryContractId
+  ) {
+    warnings.push(
+      `VAULT_REGISTRY_CONTRACT_ID overrides preset (${networkPreset.defaultRegistryContractId} → ${process.env.VAULT_REGISTRY_CONTRACT_ID})`,
+    );
+  }
+  if (process.env.NETWORK && process.env.NETWORK !== networkPreset.x402Network) {
+    warnings.push(`NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`);
+  }
+
+  const profile = {
+    stellarNetwork: STELLAR_NETWORK,
+    x402Network: NETWORK,
+    sorobanRpcUrl: SOROBAN_RPC_URL,
+    horizonUrl: HORIZON_URL,
+    registryContractId: REGISTRY_CONTRACT_ID,
+    usdcContractId,
+    warnings,
+  };
+
+  return JSON.stringify(profile, null, 2);
+}
+
+/**
  * Return opt-in tool-level metrics: per-tool call/error counts and durations,
  * plus payment attempt/failure totals. Output is always safe for agent
  * consumption (contains only tool names, counts, and durations — never
@@ -1322,6 +1368,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
+      name: "mindvault_network_profile",
+      description:
+        "Report current Stellar/x402 network configuration (testnet/mainnet), RPC URLs, registry contract ID, and warnings for custom overrides. Use this to verify which network the MCP is connected to and diagnose configuration issues.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
       name: "mindvault_check_bindings",
       description:
         "Verify the installed registry-client bindings match the deployed vault-registry contract interface. Reports a match, or a warning listing the drifting methods with the contract ID, network, client version, and a recommended fix (redeploy the contract or regenerate bindings). Useful after a contract redeploy or client upgrade.",
@@ -1558,6 +1610,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "mindvault_registry_info":
         result = registryInfo();
+        break;
+      case "mindvault_network_profile":
+        result = networkProfile();
         break;
       case "mindvault_check_bindings":
         result = await checkBindings();
