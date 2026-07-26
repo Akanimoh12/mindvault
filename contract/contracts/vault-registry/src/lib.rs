@@ -47,9 +47,18 @@ pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 /// code, this const, and the docs fails a test.
 pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("register", "Resource"),
-    ("setprice", "PriceUpdated { id, old_price, new_price, updater }"),
-    ("updmeta", "MetadataUpdateEvent { id, old_metadata, new_metadata }"),
-    ("settags", "(prev_tags: Vec<String>, next_tags: Vec<String>)"),
+    (
+        "setprice",
+        "PriceUpdated { id, old_price, new_price, updater }",
+    ),
+    (
+        "updmeta",
+        "MetadataUpdateEvent { id, old_metadata, new_metadata }",
+    ),
+    (
+        "settags",
+        "(prev_tags: Vec<String>, next_tags: Vec<String>)",
+    ),
     ("transfer", "(previous_owner: Address, new_owner: Address)"),
     ("propose", "(owner: Address, proposed: Address)"),
     ("cancel", "owner: Address"),
@@ -387,13 +396,6 @@ impl VaultRegistry {
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
         Self::move_creator_index(&env, &previous_owner, &new_creator, &id);
-
-        Self::remove_from_creator_index(&env, &previous_owner, &id);
-        let prev_count = Self::creator_count(&env, &previous_owner);
-        Self::set_creator_count(&env, &previous_owner, prev_count.saturating_sub(1));
-        Self::append_to_creator_index(&env, &new_creator, id.clone());
-        let new_count = Self::creator_count(&env, &new_creator);
-        Self::set_creator_count(&env, &new_creator, new_count + 1);
 
         let pending_key = DataKey::PendingTransfer(id.clone());
         if env.storage().persistent().has(&pending_key) {
