@@ -644,10 +644,6 @@ impl VaultRegistry {
             resource_schema_version: RESOURCE_SCHEMA_VERSION,
             network_id: env.ledger().network_id(),
         }
-    /// Number of resources currently owned by `creator`. Reflects ownership
-    /// transfers (unlike `count`, which is monotonic).
-    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
-        Self::creator_count(&env, &creator)
     }
 
     /// Current contract admin.
