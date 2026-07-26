@@ -314,6 +314,114 @@ function makePaidFetch(wallet: AgentWallet) {
   return wrapFetchWithPayment(httpFetch, client);
 }
 
+/**
+ * Account/balance states the tool can distinguish for agent-facing output:
+ * - missing: account does not exist on Stellar (never funded)
+ * - no-trustline: account exists but has no USDC trustline
+ * - zero: USDC trustline exists with 0 balance
+ * - funded: USDC trustline exists with a positive balance
+ */
+interface BalanceDetails {
+  status: "missing" | "no-trustline" | "zero" | "funded";
+  xlmBalance: string;
+  xlmReserve: string;
+  xlmAvailable: string;
+  usdcBalance: string;
+  /** Human-readable diagnostic when the account/trustline is not usable. */
+  message?: string;
+}
+
+/**
+ * Query Horizon for the agent wallet's XLM and USDC balances, distinguishing
+ * missing account, missing trustline, and zero balance states for deterministic
+ * agent-facing output.
+ */
+async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
+  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
+
+  // Account does not exist (never funded with XLM).
+  if (res.status === 404) {
+    return {
+      status: "missing",
+      xlmBalance: "0",
+      xlmReserve: "0",
+      xlmAvailable: "0",
+      usdcBalance: "0",
+      message: `Account ${publicKey} does not exist. Fund it with at least 1 XLM to activate.`,
+    };
+  }
+
+  if (!res.ok) {
+    throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
+  }
+
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+
+  // Find native XLM balance.
+  const xlmBalance = balances.find((b: any) => b.asset_type === "native");
+  const xlm = xlmBalance?.balance ?? "0";
+
+  // Stellar reserves 0.5 XLM base + 0.5 XLM per entry (trustlines, offers, signers, data).
+  // Compute available = balance - reserve so agents know how much XLM they can spend.
+  const subentryCount = data.subentry_count ?? 0;
+  const baseReserve = 0.5; // Stellar base reserve per account
+  const entryReserve = 0.5; // Reserve per subentry
+  const reserve = baseReserve + subentryCount * entryReserve;
+  const available = Math.max(0, parseFloat(xlm) - reserve);
+
+  // Find USDC trustline.
+  const usdcBalance = balances.find(
+    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
+  );
+
+  if (!usdcBalance) {
+    return {
+      status: "no-trustline",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: "0",
+      message: `USDC trustline not found. Add a USDC trustline to receive payments.`,
+    };
+  }
+
+  const usdc = usdcBalance.balance ?? "0";
+  const usdcFloat = parseFloat(usdc);
+
+  if (usdcFloat === 0) {
+    return {
+      status: "zero",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: usdc,
+      message: `USDC balance is zero. Fund the account to use x402 payments.`,
+    };
+  }
+
+  return {
+    status: "funded",
+    xlmBalance: xlm,
+    xlmReserve: reserve.toFixed(1),
+    xlmAvailable: available.toFixed(7),
+    usdcBalance: usdc,
+  };
+}
+
+/**
+ * Legacy helper — returns USDC balance as a string, defaulting to "0" for
+ * missing account or trustline. Preserved for backward compatibility with
+ * insufficientFundsMessage() and other call sites. New code should use
+ * getBalanceDetails() for richer diagnostics.
+ */
+async function getUsdcBalance(publicKey: string): Promise<string> {
+  try {
+    const details = await getBalanceDetails(publicKey);
+    return details.usdcBalance;
+  } catch {
+    return "0";
+  }
 /** Fetch an account's USDC and native (XLM) balances from Horizon. */
 async function getAccountBalances(
   publicKey: string,
@@ -475,13 +583,24 @@ async function setupWallet(profileArg?: string): Promise<string> {
 
 export async function walletInfo(): Promise<string> {
   const wallet = requireWallet();
-  const balance = await getUsdcBalance(wallet.publicKey);
-  return [
+  const details = await getBalanceDetails(wallet.publicKey);
+
+  const lines = [
     `Profile: ${activeProfileName}`,
     `Address: ${wallet.publicKey}`,
-    `USDC Balance: ${balance}`,
+    `XLM Balance: ${details.xlmBalance}`,
+    `XLM Reserved: ${details.xlmReserve} (base + subentries)`,
+    `XLM Available: ${details.xlmAvailable}`,
+    `USDC Balance: ${details.usdcBalance}`,
+    `USDC Status: ${details.status}`,
     `Publisher registered: ${currentApiKey() ? "yes" : "no"}`,
-  ].join("\n");
+  ];
+
+  if (details.message) {
+    lines.push(`Note: ${details.message}`);
+  }
+
+  return lines.join("\n");
 }
 
 /** Switch the active profile, creating it if new. */
