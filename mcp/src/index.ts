@@ -30,6 +30,7 @@ import {
   formatDiagnostics,
   hasBlockingDiagnostics,
 } from "./diagnostics.js";
+import { assertMainnetMutationAllowed, formatMainnetDiagnostics, mainnetAllowedFromEnv } from "./mainnetGuardrails.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -41,16 +42,6 @@ import {
   type WalletProfile,
 } from "./profiles.js";
 import { signMutatingHeaders } from "./requestSignature.js";
-import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
-import {
-  type WalletProfile,
-  type AgentWallet,
-  type ProfileState,
-  DEFAULT_PROFILE,
-  STATE_VERSION,
-  isValidProfileName,
-  migrateState,
-} from "./profiles.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
 
@@ -87,15 +78,6 @@ const NETWORK: X402Network = normalizeX402Network(
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
 
-/** Snapshot (and optionally reset) opt-in tool metrics. Never includes secrets. */
-function toolMetrics(reset: boolean): string {
-  const snap = metrics.snapshot();
-  if (reset) metrics.reset();
-  if (!snap.enabled) {
-    return "Metrics disabled. Set MINDVAULT_METRICS=1 on the server to enable.";
-  }
-  return JSON.stringify(snap, null, 2);
-}
 // Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
 // call and the on-chain registry lookup are served from deterministic in-memory
 // fixtures — no live backend, funded wallet, or network access required. All
@@ -417,6 +399,8 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
   } catch {
     return "0";
   }
+}
+
 /** Fetch an account's USDC and native (XLM) balances from Horizon. */
 async function getAccountBalances(
   publicKey: string,
@@ -428,10 +412,6 @@ async function getAccountBalances(
   const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
   const native = balances.find((b) => b.asset_type === "native");
   return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
-}
-
-async function getUsdcBalance(publicKey: string): Promise<string> {
-  return (await getAccountBalances(publicKey)).usdc;
 }
 
 function formatResource(r: any): string {
@@ -1213,6 +1193,9 @@ async function checkConsistency(resourceId: string): Promise<string> {
     : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
 
   return JSON.stringify({ ...report, summary }, null, 2);
+}
+
+/**
  * Report the current Stellar and x402 network configuration in use by this MCP
  * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
  * USDC contract IDs, and warnings for environment variable overrides that
@@ -1256,18 +1239,6 @@ export function networkProfile(): string {
   };
 
   return JSON.stringify(profile, null, 2);
-}
-
-/**
- * Return opt-in tool-level metrics: per-tool call/error counts and durations,
- * plus payment attempt/failure totals. Output is always safe for agent
- * consumption (contains only tool names, counts, and durations — never
- * arguments, wallets, or API keys).
- */
-function toolMetrics(reset: boolean): string {
-  const snapshot = metrics.snapshot();
-  if (reset && metrics.enabled) metrics.reset();
-  return JSON.stringify(snapshot, null, 2);
 }
 
 /**
@@ -1703,6 +1674,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return agentStatus();
     case "mindvault_registry_info":
       return registryInfo();
+    case "mindvault_network_profile":
+      return networkProfile();
     case "mindvault_check_bindings":
       return checkBindings();
     case "mindvault_check_consistency":
@@ -1727,93 +1700,9 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
-    assertMainnetMutationAllowed(STELLAR_NETWORK, name, args as Record<string, unknown>);
-    let result: string;
-    switch (name) {
-      case "mindvault_setup_wallet":
-        result = await setupWallet(args.profile as string | undefined);
-        break;
-      case "mindvault_wallet_info":
-        result = await walletInfo();
-        break;
-      case "mindvault_use_profile":
-        result = useProfile(args.name as string);
-        break;
-      case "mindvault_list_profiles":
-        result = listProfiles();
-        break;
-      case "mindvault_browse":
-        result = await browse();
-        break;
-      case "mindvault_search": {
-        const filters = normalizeSearchFilters(args);
-        if (!filters) {
-          result = "Provide a non-empty search query.";
-        } else {
-          result = await search(filters);
-        }
-        break;
-      }
-      case "mindvault_preview":
-        result = await preview(args.resourceId as string);
-        break;
-      case "mindvault_register":
-        result = await register(
-          args.name as string,
-          args.email as string,
-          args.walletAddress as string | undefined,
-        );
-        break;
-      case "mindvault_publish":
-        result = await publish({
-          title: args.title as string,
-          description: args.description as string | undefined,
-          price: args.price as string,
-          externalUrl: args.externalUrl as string,
-        });
-        break;
-      case "mindvault_buy":
-        result = await buy(args.resourceId as string);
-        break;
-      case "mindvault_register_onchain":
-        result = await registerOnchain(args.resourceId as string);
-        break;
-      case "mindvault_agent_status":
-        result = await agentStatus();
-        break;
-      case "mindvault_registry_info":
-        result = registryInfo();
-        break;
-      case "mindvault_network_profile":
-        result = networkProfile();
-        break;
-      case "mindvault_check_bindings":
-        result = await checkBindings();
-        break;
-      case "mindvault_check_consistency":
-        result = await checkConsistency(args.resourceId as string);
-        break;
-      case "mindvault_registry_lookup":
-        result = await registryLookup(args.resourceId as string);
-        break;
-      case "mindvault_tx_status":
-        result = await txStatus(args.txHash as string);
-        break;
-      case "mindvault_reset":
-        result = resetState(args.all === true);
-        break;
-      case "mindvault_backup_state":
-        result = backupState(args.passphrase as string);
-        break;
-      case "mindvault_restore_state":
-        result = restoreStateTool(args.blob as string, args.passphrase as string);
-        break;
-      case "mindvault_metrics":
-        result = toolMetrics(args.reset === true);
-        break;
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
+    // Errors thrown by tools (and by measureTool's re-throw) become a deterministic
+    // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
+    // stripped via safeErrorMessage. Clients should treat that shape as failure.
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
@@ -1840,5 +1729,12 @@ if (!process.env.VITEST && !MOCK) {
     });
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// Connect stdio when running as a real MCP process. Under Vitest the integration
+// harness (and unit tests) import this module and wire an in-memory transport
+// instead — connecting stdio here would hang the test runner on stdin.
+export { server };
+
+if (!process.env.VITEST) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

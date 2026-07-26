@@ -15,10 +15,14 @@ exports[`MCP tool metadata > all tools have required fields 1`] = `
   "mindvault_register_onchain",
   "mindvault_agent_status",
   "mindvault_registry_info",
+  "mindvault_network_profile",
   "mindvault_check_bindings",
+  "mindvault_check_consistency",
   "mindvault_registry_lookup",
   "mindvault_tx_status",
   "mindvault_reset",
+  "mindvault_backup_state",
+  "mindvault_restore_state",
   "mindvault_metrics",
 ]
 `;
