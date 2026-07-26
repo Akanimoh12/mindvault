@@ -60,6 +60,8 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
+    Admin,
+    PendingAdmin,
     CreatorTerms(Address),
     Admin,
     CreatorResources(Address),
@@ -79,6 +81,19 @@ pub struct MetadataUpdateEvent {
     pub new_metadata: String,
 }
 
+/// Structured payload published with the `setprice` event.
+/// Includes the resource id, the price before and after the update, and the
+/// address that authorised the change — enabling indexers to reconcile price
+/// history without re-reading contract storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceUpdated {
+    pub id: String,
+    pub old_price: i128,
+    pub new_price: i128,
+    pub updater: Address,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -88,6 +103,10 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
+    Unauthorized = 6,
+    PendingAdminNotSet = 7,
+    PendingAdminAlreadySet = 8,
+    SameAdmin = 9,
     TermsHashTooLong = 6,
     AlreadyInitialized = 7,
     InvalidResourceId = 8,
@@ -162,15 +181,28 @@ impl VaultRegistry {
 
     /// Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
     /// Only the creator may call this.
+    /// Update a resource's price. Only the creator may call this.
+    ///
+    /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
+    /// containing `id`, `old_price`, `new_price`, and `updater`.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        let old_price = resource.price;
+        let updater = resource.creator.clone();
         resource.price = new_price;
         Self::save(&env, &resource);
-        env.events()
-            .publish((symbol_short!("setprice"), id), new_price);
+        env.events().publish(
+            (symbol_short!("setprice"),),
+            PriceUpdated {
+                id,
+                old_price,
+                new_price,
+                updater,
+            },
+        );
         Ok(())
     }
 
@@ -206,9 +238,15 @@ impl VaultRegistry {
         Self::validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        
+        // Capture previous tags before replacement for event emission
+        let prev_tags = resource.tags.clone();
         resource.tags = tags.clone();
         Self::save(&env, &resource);
-        env.events().publish((symbol_short!("settags"), id), tags);
+        
+        // Emit event with both previous and next tags for indexer reconciliation
+        env.events()
+            .publish((symbol_short!("settags"), id), (prev_tags, tags));
         Ok(())
     }
 
@@ -279,14 +317,20 @@ impl VaultRegistry {
     }
 
     /// Set the listing state of a resource. Only the creator may call this.
+    ///
+    /// Emits a `setlisted` event with data `(old_listed, new_listed)` so
+    /// listeners can distinguish a delist, relist, or no-op transition without
+    /// needing to query additional state. The event is always emitted, even
+    /// when the new value equals the old value.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        let old_listed = resource.listed;
         resource.listed = listed;
         Self::save(&env, &resource);
         env.events()
-            .publish((symbol_short!("setlisted"), id), listed);
+            .publish((symbol_short!("setlisted"), id), (old_listed, listed));
         Ok(())
     }
 
@@ -424,6 +468,72 @@ impl VaultRegistry {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
 
+    /// Current contract admin.
+    pub fn admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Pending nominated contract admin.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Nominate a new contract admin. Only the current admin may call this.
+    /// Sets `pending_admin`. The nomination does not take effect until
+    /// the pending admin calls `accept_admin`.
+    pub fn nominate_new_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            new_admin.require_auth();
+            env.storage().instance().set(&DataKey::Admin, &new_admin);
+            Self::bump_instance(&env);
+            env.events()
+                .publish((symbol_short!("setadmin"),), new_admin);
+            return Ok(());
+        }
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap();
+        stored_admin.require_auth();
+
+        if new_admin == stored_admin {
+            return Err(Error::SameAdmin);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::PendingAdminAlreadySet);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("nomadmin"),), new_admin);
+        Ok(())
+    }
+
+    /// Accept the pending admin nomination and become the contract admin.
+    /// Only the pending admin may call this.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let stored_pending: Address = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+            .ok_or(Error::PendingAdminNotSet)?;
+
+        if stored_pending != new_admin {
+            return Err(Error::PendingAdminNotSet);
+        }
+
+        new_admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("accadmin"),), new_admin);
+        Ok(())
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
@@ -515,6 +625,9 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
+        if metadata.len() == 0 {
+            return Err(Error::EmptyMetadata);
+        }
         if metadata.len() > MAX_METADATA_POINTER_LEN {
             return Err(Error::MetadataTooLong);
         }
