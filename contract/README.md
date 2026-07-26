@@ -124,33 +124,6 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 
 ### Error codes
 
- fix/418-mcp-add-mcp-catalog-search-filters-parity
-| Code | Error                           | Description                                                                                                    |
-| ---- | ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `1`  | `AlreadyRegistered`             | A resource with the given `id` already exists.                                                                 |
-| `2`  | `NotFound`                      | No resource (or terms hash) matches the given key.                                                             |
-| `3`  | `InvalidPrice`                  | Price is `<= 0`.                                                                                               |
-| `4`  | `MetadataTooLong`               | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes).                                               |
-| `5`  | `InvalidTag`                    | Tag format or count validation failed.                                                                         |
-| `6`  | `Unauthorized`                  | Caller authentication check failed or unauthorized.                                                            |
-| `7`  | `PendingAdminNotSet`            | No pending admin is set, or caller does not match the pending admin.                                           |
-| `8`  | `PendingAdminAlreadySet`        | A pending admin nomination is already active.                                                                  |
-| `9`  | `SameAdmin`                     | Nominated new admin is already the current contract admin.                                                     |
-| `10` | `TermsHashTooLong`              | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                                                            |
-| `11` | `InvalidResourceId`             | Resource id is empty or exceeds 24 bytes.                                                                      |
-| `12` | `InvalidMetadataPointer`        | Metadata pointer does not start with a supported prefix.                                                       |
-| `13` | `AlreadyOwner`                  | Proposed/target new owner is already the current owner.                                                        |
-| `14` | `NoPendingTransfer`             | No pending transfer exists for this resource.                                                                  |
-| `15` | `ReservedId`                    | Resource id collides with a reserved word (e.g. `admin`, `registry`).                                          |
-| `16` | `PriceExceedsMax`               | Price exceeds `MAX_PRICE`.                                                                                     |
-| `17` | `EmptyMetadata`                 | Metadata pointer is empty.                                                                                     |
-| `18` | `AdminNotSet`                   | `add_verifier`/`remove_verifier`/`repair_index` called before any admin has been set via `nominate_new_admin`. |
-| `19` | `NotVerifier`                   | Caller does not currently hold the verifier role.                                                              |
-| `20` | `InvalidVerificationTransition` | Requested verification status transition isn't one of the four allowed transitions.                            |
-| `21` | `AlreadyFrozen`                 | `freeze_metadata` called on a resource that is already frozen.                                                 |
-| `22` | `MetadataFrozen`                | `update_metadata` called on a resource that has been frozen.                                                   |
-| `23` | `DuplicateInRepair`             | `repair_index`'s id list contains the same id more than once.                                                  |
-
 | Code | Error                    | Description                                                           |
 | ---- | ------------------------ | --------------------------------------------------------------------- |
 | `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                        |
@@ -170,7 +143,6 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `15` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
 | `16` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
 | `17` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
-main
 
 ### Events
 
@@ -181,11 +153,6 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 `full_workflow_emits_exactly_the_documented_events` tests in `src/test.rs` fail
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
-
- fix/418-mcp-add-mcp-catalog-search-filters-parity
-| Event       | Payload                                                  | Triggered by                                               |
-| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
-| `register`  | `Resource`                                               | `register()` succeeds                                      |
 
 | Event      | Payload                           | Triggered by                                                                                                           |
 | ---------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -217,7 +184,6 @@ All events use the topic `(symbol, id)` (or `(symbol,)` for admin/no-id actions)
 | Event       | Payload                                                  | Triggered by                                               |
 | ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
 | `register`  | `Resource` (full struct)                                 | `register()` succeeds                                      |
- main
 | `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
 | `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
 | `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |

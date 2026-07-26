@@ -6,17 +6,10 @@
  * (mindvault_search, mindvault_publish) to prevent regressions when updating
  * descriptions or examples.
  *
- * Note: we intentionally do not import ./index.js here — that module connects a
- * stdio transport at load time and would hang the test process.
- */
-import { describe, it, expect } from "vitest";
-import { catalogFilterInputProperties } from "./catalogFilters.js";
-
-describe("MCP tool metadata", () => {
-  it("all tools have required fields", () => {
  * Full ListTools coverage through the SDK lives in `integration.test.ts`.
  */
 import { describe, it, expect } from "vitest";
+import { catalogFilterInputProperties } from "./catalogFilters.js";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", () => {
@@ -61,6 +54,7 @@ describe("MCP tool metadata", () => {
   });
 
   it("mindvault_publish inputSchema", () => {
+    // Snapshot mindvault_publish schema (critical tool for publishers).
     const publishSchema = {
       type: "object",
       properties: {
