@@ -1,11 +1,12 @@
 #![cfg(test)]
 
 use super::*;
+use crate::alloc::format;
+use crate::alloc::string::ToString;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
-    Address, Env, IntoVal, String, Vec,
-    Address, Env, String, TryFromVal, Vec,
+    Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -56,7 +57,7 @@ fn register_then_read() {
 #[test]
 fn register_event_contains_full_resource_payload() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-res");
+    let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
     let price = 500i128;
     let tags_list = tags(&env, &["tag1"]);
@@ -70,18 +71,26 @@ fn register_event_contains_full_resource_payload() {
         if topics.len() != 2 {
             continue;
         }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap()).ok().unwrap();
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+                .ok()
+                .unwrap();
         if t0 != Symbol::new(&env, "register") {
             continue;
         }
-        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data).ok().unwrap();
+        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data)
+            .ok()
+            .unwrap();
         assert_eq!(resource.id, id);
         assert_eq!(resource.creator, creator);
         assert_eq!(resource.price, price);
         assert_eq!(resource.metadata, metadata);
         assert!(resource.listed);
         assert_eq!(resource.tags.len(), 1);
-        assert_eq!(resource.tags.get(0).unwrap(), String::from_str(&env, "tag1"));
+        assert_eq!(
+            resource.tags.get(0).unwrap(),
+            String::from_str(&env, "tag1")
+        );
         found = true;
         break;
     }
@@ -151,7 +160,7 @@ fn zero_or_negative_price_rejected() {
 #[test]
 fn register_rejects_price_exceeding_max() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "too-pricey");
+    let id = String::from_str(&env, "toopricey");
     let metadata = String::from_str(&env, "ipfs://x");
     let over = MAX_PRICE + 1;
     assert_eq!(
@@ -164,7 +173,13 @@ fn register_rejects_price_exceeding_max() {
 fn set_price_rejects_price_exceeding_max() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "r1");
-    client.register(&creator, &id, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env));
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
     let over = MAX_PRICE + 1;
     assert_eq!(
         client.try_set_price(&id, &over),
@@ -175,7 +190,7 @@ fn set_price_rejects_price_exceeding_max() {
 #[test]
 fn maximum_price_accepted() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "max-price");
+    let id = String::from_str(&env, "maxprice");
     let metadata = String::from_str(&env, "ipfs://x");
     client.register(&creator, &id, &MAX_PRICE, &metadata, &empty_tags(&env));
     assert_eq!(client.get(&id).price, MAX_PRICE);
@@ -184,7 +199,7 @@ fn maximum_price_accepted() {
 #[test]
 fn invalid_resource_id_rejected() {
     let (env, creator, client) = setup();
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
 
     let empty = String::from_str(&env, "");
     assert_eq!(
@@ -200,7 +215,13 @@ fn invalid_resource_id_rejected() {
 
     let invalid_chars = String::from_str(&env, "bad-id");
     assert_eq!(
-        client.try_register(&creator, &invalid_chars, &100i128, &metadata, &empty_tags(&env)),
+        client.try_register(
+            &creator,
+            &invalid_chars,
+            &100i128,
+            &metadata,
+            &empty_tags(&env)
+        ),
         Err(Ok(Error::InvalidResourceId))
     );
 }
@@ -209,7 +230,7 @@ fn invalid_resource_id_rejected() {
 fn valid_resource_id_is_accepted() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "swcn98besxpp6t1u8e77fqz3");
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
 
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
     assert!(client.exists(&id));
@@ -245,7 +266,7 @@ fn set_price_updates_value() {
 #[test]
 fn set_price_emits_structured_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-r1");
+    let id = String::from_str(&env, "evtr1");
     let initial_price = 1_000_000i128;
     let updated_price = 2_500_000i128;
 
@@ -308,7 +329,7 @@ fn ownership_can_transfer() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -326,12 +347,14 @@ fn event_data_as_owners(
         if topics.len() != 2 {
             continue;
         }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
-        if t0 != Symbol::new(&events.env(), topic0_str) {
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
+                .ok()?;
+        if t0 != Symbol::new(events.env(), topic0_str) {
             continue;
         }
         let pair: (Address, Address) =
-            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
         return Some(pair);
     }
     None
@@ -346,11 +369,14 @@ fn event_data_as_address(
         if topics.len() != 2 {
             continue;
         }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
-        if t0 != Symbol::new(&events.env(), topic0_str) {
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
+                .ok()?;
+        if t0 != Symbol::new(events.env(), topic0_str) {
             continue;
         }
-        let addr: Address = <Address as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        let addr: Address =
+            <Address as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
         return Some(addr);
     }
     None
@@ -359,7 +385,7 @@ fn event_data_as_address(
 #[test]
 fn transfer_ownership_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-xfer");
+    let id = String::from_str(&env, "evtxfer");
     let new_owner = Address::generate(&env);
     client.register(
         &creator,
@@ -379,7 +405,7 @@ fn transfer_ownership_event_contains_previous_and_new_owner() {
 #[test]
 fn propose_transfer_event_contains_owner_and_proposed() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-propose");
+    let id = String::from_str(&env, "evtpropose");
     let proposed = Address::generate(&env);
     client.register(
         &creator,
@@ -399,7 +425,7 @@ fn propose_transfer_event_contains_owner_and_proposed() {
 #[test]
 fn accept_transfer_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-accept");
+    let id = String::from_str(&env, "evtaccept");
     let new_owner = Address::generate(&env);
     client.register(
         &creator,
@@ -423,7 +449,9 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
             last_transfer_data = Some(data);
         }
     }
-    let accept_data = last_transfer_data.as_ref().expect("accept transfer event not found");
+    let accept_data = last_transfer_data
+        .as_ref()
+        .expect("accept transfer event not found");
     let (prev, new): (Address, Address) =
         <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
             .expect("accept event data should decode to (Address, Address)");
@@ -434,7 +462,7 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
 #[test]
 fn cancel_transfer_event_contains_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-cancel");
+    let id = String::from_str(&env, "evtcancel");
     let proposed = Address::generate(&env);
     client.register(
         &creator,
@@ -459,7 +487,7 @@ fn set_listed_toggles_listing_state() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -483,7 +511,7 @@ fn delist_convenience_method() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -561,7 +589,7 @@ fn update_metadata_preserves_price_and_creator() {
 #[test]
 fn get_owner_returns_creator() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "owner-test");
+    let id = String::from_str(&env, "ownertest");
     client.register(
         &creator,
         &id,
@@ -584,12 +612,12 @@ fn get_owner_missing_fails() {
 #[test]
 fn get_owner_after_transfer() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "owner-xfer");
+    let id = String::from_str(&env, "ownerxfer");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -641,12 +669,12 @@ fn set_listed_on_missing_resource_fails() {
 #[test]
 fn set_listed_event_emits_old_and_new_state_delist() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-delist");
+    let id = String::from_str(&env, "evdelist");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -669,12 +697,12 @@ fn set_listed_event_emits_old_and_new_state_delist() {
 #[test]
 fn set_listed_event_emits_old_and_new_state_relist() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-relist");
+    let id = String::from_str(&env, "evrelist");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -709,12 +737,12 @@ fn set_listed_event_emits_old_and_new_state_relist() {
 #[test]
 fn set_listed_event_no_op_same_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-noop");
+    let id = String::from_str(&env, "evnoop");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -737,12 +765,12 @@ fn set_listed_event_no_op_same_state() {
 #[test]
 fn delist_convenience_method_emits_old_and_new_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-delist2");
+    let id = String::from_str(&env, "evdelist2");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -769,21 +797,21 @@ fn set_listed_and_delist_events_are_consistent() {
     // shape. This directly tests the acceptance criterion: "Events are
     // consistent for set_listed(false), delist, and relisting."
     let (env, creator, client) = setup();
-    let id1 = String::from_str(&env, "ev-cons1");
-    let id2 = String::from_str(&env, "ev-cons2");
+    let id1 = String::from_str(&env, "evcons1");
+    let id2 = String::from_str(&env, "evcons2");
 
     client.register(
         &creator,
         &id1,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     client.register(
         &creator,
         &id2,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -857,7 +885,7 @@ fn metadata_of_len(env: &Env, len: u32) -> String {
 #[test]
 fn register_accepts_metadata_at_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-max");
+    let id = String::from_str(&env, "metamax");
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
     assert_eq!(client.get(&id).metadata.len(), MAX_METADATA_POINTER_LEN);
@@ -866,7 +894,7 @@ fn register_accepts_metadata_at_max_length() {
 #[test]
 fn register_rejects_metadata_over_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-long");
+    let id = String::from_str(&env, "metalong");
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
     assert_eq!(
         client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
@@ -878,12 +906,12 @@ fn register_rejects_metadata_over_max_length() {
 #[test]
 fn update_metadata_accepts_at_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-ok");
+    let id = String::from_str(&env, "metaupdok");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "short"),
+        &String::from_str(&env, "ipfs://short"),
         &empty_tags(&env),
     );
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
@@ -894,7 +922,7 @@ fn update_metadata_accepts_at_max_length() {
 #[test]
 fn update_metadata_rejects_over_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-bad");
+    let id = String::from_str(&env, "metaupdbad");
     client.register(
         &creator,
         &id,
@@ -907,57 +935,10 @@ fn update_metadata_rejects_over_max_length() {
         client.try_update_metadata(&id, &metadata),
         Err(Ok(Error::MetadataTooLong))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ar://short"));
-}
-
-#[test]
-fn register_accepts_empty_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-empty");
-    let metadata = String::from_str(&env, "");
-    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    assert_eq!(client.get(&id).metadata, metadata);
-}
-
-#[test]
-fn register_accepts_one_character_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-one");
-    let metadata = String::from_str(&env, "a");
-    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    assert_eq!(client.get(&id).metadata, metadata);
-}
-
-#[test]
-fn update_metadata_accepts_empty_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-empty");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "short"),
-        &empty_tags(&env),
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ar://short")
     );
-    let metadata = String::from_str(&env, "");
-    client.update_metadata(&id, &metadata);
-    assert_eq!(client.get(&id).metadata, metadata);
-}
-
-#[test]
-fn update_metadata_accepts_one_character_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-one");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "short"),
-        &empty_tags(&env),
-    );
-    let metadata = String::from_str(&env, "a");
-    client.update_metadata(&id, &metadata);
-    assert_eq!(client.get(&id).metadata, metadata);
 }
 
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
@@ -1012,7 +993,7 @@ fn list_start_beyond_count_returns_empty() {
 #[test]
 fn register_extends_resource_storage_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-register");
+    let id = String::from_str(&env, "ttlregister");
     client.register(
         &creator,
         &id,
@@ -1029,12 +1010,12 @@ fn register_extends_resource_storage_ttl() {
 #[test]
 fn set_price_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-price");
+    let id = String::from_str(&env, "ttlprice");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     env.ledger()
@@ -1054,7 +1035,7 @@ fn set_price_reextends_resource_ttl() {
 #[test]
 fn update_metadata_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-meta");
+    let id = String::from_str(&env, "ttlmeta");
     client.register(
         &creator,
         &id,
@@ -1075,12 +1056,12 @@ fn update_metadata_reextends_resource_ttl() {
 #[test]
 fn transfer_ownership_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-xfer");
+    let id = String::from_str(&env, "ttlxfer");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     env.ledger()
@@ -1180,9 +1161,8 @@ fn list_listed_start_beyond_listed_items_returns_empty() {
 fn list_listed_limit_capped_at_20() {
     let (env, creator, client) = setup();
     let ids: [&str; 25] = [
-        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9",
-        "i10", "i11", "i12", "i13", "i14", "i15", "i16", "i17", "i18", "i19",
-        "i20", "i21", "i22", "i23", "i24",
+        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "i10", "i11", "i12", "i13",
+        "i14", "i15", "i16", "i17", "i18", "i19", "i20", "i21", "i22", "i23", "i24",
     ];
     register_n(&env, &creator, &client, &ids);
 
@@ -1216,8 +1196,14 @@ fn list_page_exposes_next_cursor_then_end() {
 
     let second = client.list_page(&first.next_cursor.unwrap(), &3u32);
     assert_eq!(second.items.len(), 2);
-    assert_eq!(second.items.get(0).unwrap().id, String::from_str(&env, "r3"));
-    assert_eq!(second.items.get(1).unwrap().id, String::from_str(&env, "r4"));
+    assert_eq!(
+        second.items.get(0).unwrap().id,
+        String::from_str(&env, "r3")
+    );
+    assert_eq!(
+        second.items.get(1).unwrap().id,
+        String::from_str(&env, "r4")
+    );
     assert_eq!(second.next_cursor, None);
 }
 
@@ -1228,7 +1214,7 @@ fn list_page_cursor_past_end_is_empty_end_of_list() {
         &creator,
         &String::from_str(&env, "x"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1292,7 +1278,7 @@ fn register_with_tags_stores_labels() {
 #[test]
 fn set_tags_updates_value_without_touching_metadata() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tag-update");
+    let id = String::from_str(&env, "tagupdate");
     let metadata = String::from_str(&env, "ipfs://QmKeepMeta");
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
 
@@ -1308,7 +1294,7 @@ fn set_tags_updates_value_without_touching_metadata() {
 #[test]
 fn invalid_metadata_pointer_rejected() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "bad-pointer");
+    let id = String::from_str(&env, "badpointer");
     let metadata = String::from_str(&env, "not-a-supported-pointer");
 
     assert_eq!(
@@ -1321,7 +1307,7 @@ fn invalid_metadata_pointer_rejected() {
 #[test]
 fn invalid_tag_rejected() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "bad-tag");
+    let id = String::from_str(&env, "badtag");
     let metadata = String::from_str(&env, "ipfs://m");
     let empty = String::from_str(&env, "");
     let mut bad = Vec::new(&env);
@@ -1415,9 +1401,12 @@ fn nominate_new_admin_rejects_pending_already_set() {
         client.try_nominate_new_admin(&pending2),
         Err(Ok(Error::PendingAdminAlreadySet))
     );
+}
+
+#[test]
 fn register_rejects_empty_metadata() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "empty-meta");
+    let id = String::from_str(&env, "emptymeta");
     let metadata = String::from_str(&env, "");
     assert_eq!(
         client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
@@ -1429,7 +1418,25 @@ fn register_rejects_empty_metadata() {
 #[test]
 fn update_metadata_rejects_empty() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "upd-empty");
+    let id = String::from_str(&env, "updempty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://valid"),
+        &empty_tags(&env),
+    );
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_update_metadata(&id, &empty),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://valid")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // update_metadata event tests
 // ---------------------------------------------------------------------------
@@ -1445,7 +1452,7 @@ fn collect_updmeta_events(
     let mut result: soroban_sdk::Vec<MetadataUpdateEvent> = soroban_sdk::Vec::new(env);
     for i in 0..all.len() {
         let (cid, topics, data) = all.get(i).unwrap();
-        if cid != *contract_id || topics.len() < 1 {
+        if cid != *contract_id || topics.is_empty() {
             continue;
         }
         // topics.get(0) is a Val. Try to decode it as a Symbol and compare.
@@ -1465,7 +1472,7 @@ fn collect_updmeta_events(
 #[test]
 fn update_metadata_emits_structured_event_with_old_and_new() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
+    let id = String::from_str(&env, "eventtest");
     let old_meta = String::from_str(&env, "ipfs://QmOld");
     let new_meta = String::from_str(&env, "ipfs://QmNew");
 
@@ -1484,7 +1491,7 @@ fn update_metadata_emits_structured_event_with_old_and_new() {
 #[test]
 fn update_metadata_event_old_metadata_matches_prior_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-chain");
+    let id = String::from_str(&env, "evtchain");
     let meta_v1 = String::from_str(&env, "ipfs://QmV1");
     let meta_v2 = String::from_str(&env, "ipfs://QmV2");
     let meta_v3 = String::from_str(&env, "ipfs://QmV3");
@@ -1495,7 +1502,11 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
     client.update_metadata(&id, &meta_v2);
     {
         let events = collect_updmeta_events(&env, &client.address);
-        assert_eq!(events.len(), 1, "expected one updmeta event after first update");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected one updmeta event after first update"
+        );
         let e = events.get(0).unwrap();
         assert_eq!(e.old_metadata, meta_v1);
         assert_eq!(e.new_metadata, meta_v2);
@@ -1505,7 +1516,11 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
     client.update_metadata(&id, &meta_v3);
     {
         let events = collect_updmeta_events(&env, &client.address);
-        assert_eq!(events.len(), 1, "expected one updmeta event after second update");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected one updmeta event after second update"
+        );
         let e = events.get(0).unwrap();
         assert_eq!(e.old_metadata, meta_v2);
         assert_eq!(e.new_metadata, meta_v3);
@@ -1515,12 +1530,12 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
 #[test]
 fn update_metadata_event_id_matches_resource_id() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-id-check");
+    let id = String::from_str(&env, "evtidcheck");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1535,12 +1550,12 @@ fn update_metadata_event_id_matches_resource_id() {
 #[test]
 fn update_metadata_failed_validation_emits_no_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-no-emit");
+    let id = String::from_str(&env, "evtnoemit");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "valid"),
+        &String::from_str(&env, "ipfs://valid"),
         &empty_tags(&env),
     );
     let empty = String::from_str(&env, "");
@@ -1548,9 +1563,9 @@ fn update_metadata_failed_validation_emits_no_event() {
         client.try_update_metadata(&id, &empty),
         Err(Ok(Error::EmptyMetadata))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "valid"));
-        &String::from_str(&env, "m"),
-        &empty_tags(&env),
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://valid")
     );
 
     let too_long = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
@@ -1561,13 +1576,17 @@ fn update_metadata_failed_validation_emits_no_event() {
 
     // No updmeta event should be emitted when the call fails.
     let events = collect_updmeta_events(&env, &client.address);
-    assert_eq!(events.len(), 0, "failed update_metadata must not emit any updmeta event");
+    assert_eq!(
+        events.len(),
+        0,
+        "failed update_metadata must not emit any updmeta event"
+    );
 }
 
 #[test]
 fn update_metadata_state_not_mutated_on_failed_call() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "no-state-change");
+    let id = String::from_str(&env, "nostatechange");
     let original = String::from_str(&env, "ipfs://QmOriginal");
     client.register(&creator, &id, &100i128, &original, &empty_tags(&env));
 
@@ -1583,6 +1602,8 @@ fn update_metadata_state_not_mutated_on_failed_call() {
     );
     assert_eq!(r.price, 100i128);
     assert_eq!(r.creator, creator);
+}
+
 /// Assert core registry invariants after mixed ops.
 ///
 /// Checks:
@@ -1636,7 +1657,7 @@ fn registry_invariant_suite_mixed_ops() {
     assert_eq!(client.list(&0u32, &20u32).len(), 0);
 
     // ── Step 1: register r0 under alice ──────────────────────────────────────
-    let r0 = String::from_str(&env, "inv-r0");
+    let r0 = String::from_str(&env, "invr0");
     let tags0 = tags(&env, &["dataset"]);
     client.register(
         &alice,
@@ -1647,15 +1668,15 @@ fn registry_invariant_suite_mixed_ops() {
     );
     assert_registry_invariants(
         &client,
-        &[r0.clone()],
-        &[alice.clone()],
+        core::slice::from_ref(&r0),
+        core::slice::from_ref(&alice),
         &[1_000],
         &[true],
-        &[tags0.clone()],
+        core::slice::from_ref(&tags0),
     );
 
     // ── Step 2: register r1 under alice ──────────────────────────────────────
-    let r1 = String::from_str(&env, "inv-r1");
+    let r1 = String::from_str(&env, "invr1");
     let empty0 = empty_tags(&env);
     client.register(
         &alice,
@@ -1730,7 +1751,7 @@ fn registry_invariant_suite_mixed_ops() {
     );
 
     // ── Step 8: register r2 under bob ────────────────────────────────────────
-    let r2 = String::from_str(&env, "inv-r2");
+    let r2 = String::from_str(&env, "invr2");
     let tags2 = tags(&env, &["beta"]);
     client.register(
         &bob,
@@ -1756,7 +1777,7 @@ fn registry_invariant_suite_mixed_ops() {
             &alice,
             &r1,
             &1i128,
-            &String::from_str(&env, "x"),
+            &String::from_str(&env, "ipfs://x"),
             &empty_tags(&env)
         ),
         Err(Ok(Error::AlreadyRegistered))
@@ -1816,7 +1837,7 @@ fn registry_invariant_suite_mixed_ops() {
     );
 
     // Missing resource lookups are deterministic NotFound.
-    let missing = String::from_str(&env, "no-such-resource");
+    let missing = String::from_str(&env, "nosuchresource");
     assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
     assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
     assert!(!client.exists(&missing));
@@ -1846,11 +1867,9 @@ fn registry_invariant_suite_mixed_ops() {
     assert_eq!(client.count(), 3);
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
 #[test]
 fn creator_resource_count_starts_at_zero() {
-    let (env, creator, client) = setup();
+    let (_env, creator, client) = setup();
     assert_eq!(client.creator_resource_count(&creator), 0);
 }
 
@@ -1861,7 +1880,7 @@ fn creator_resource_count_increments_on_register() {
         &creator,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     assert_eq!(client.creator_resource_count(&creator), 1);
@@ -1870,7 +1889,7 @@ fn creator_resource_count_increments_on_register() {
         &creator,
         &String::from_str(&env, "r2"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     assert_eq!(client.creator_resource_count(&creator), 2);
@@ -1878,7 +1897,13 @@ fn creator_resource_count_increments_on_register() {
     // Failed duplicate does not inflate count.
     let dup = String::from_str(&env, "r1");
     assert_eq!(
-        client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "m"), &empty_tags(&env)),
+        client.try_register(
+            &creator,
+            &dup,
+            &100i128,
+            &String::from_str(&env, "ipfs://m"),
+            &empty_tags(&env)
+        ),
         Err(Ok(Error::AlreadyRegistered)),
     );
     assert_eq!(client.creator_resource_count(&creator), 2);
@@ -1893,14 +1918,14 @@ fn creator_resource_count_moves_on_transfer_ownership() {
         &creator,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     client.register(
         &creator,
         &String::from_str(&env, "r2"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1925,24 +1950,23 @@ fn creator_resource_count_zero_for_unrelated_creator() {
         &creator_a,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
     // Creator B never registered anything; 0 expected.
     assert_eq!(client.creator_resource_count(&creator_b), 0);
 }
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
-        id_str in r"[a-zA-Z0-9_-]{1,32}",
+        id_str in r"[a-z0-9]{1,24}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
-        meta_str in r"[a-zA-Z0-9:/\\._-]{1,512}",
-        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,512}",
+        meta_str in r"[a-zA-Z0-9:/\\._-]{1,500}",
+        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,500}",
         listed in any::<bool>(),
     ) {
         let env = Env::default();
@@ -1988,35 +2012,42 @@ proptest! {
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "eventtest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with initial tags
     let initial_tags = tags(&env, &["data", "research"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Replace with new tags
     let new_tags = tags(&env, &["finance", "api"]);
     client.set_tags(&id, &new_tags);
-    
+
     // Verify event contains both prev and next tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    
+
     // Event structure: (contract_address, topics_vec, data)
     // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
-    let (_contract, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_contract, topics, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     // Decode topics: [symbol_short!("settags"), id]
     assert_eq!(topics.len(), 2);
-    
+
     // Decode data as tuple: (prev_tags, new_tags)
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
-    
+
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
-    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
-    
+    assert_eq!(
+        prev_tags.get(1).unwrap(),
+        String::from_str(&env, "research")
+    );
+
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
     assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "api"));
@@ -2025,22 +2056,26 @@ fn set_tags_event_includes_prev_and_next() {
 #[test]
 fn set_tags_event_supports_tag_removal() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "removal-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "removaltest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with multiple tags
     let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Clear all tags
     let empty = empty_tags(&env);
     client.set_tags(&id, &empty);
-    
+
     // Verify event shows previous tags and empty next tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 3);
     assert_eq!(next_tags.len(), 0);
@@ -2049,21 +2084,25 @@ fn set_tags_event_supports_tag_removal() {
 #[test]
 fn set_tags_event_supports_tag_addition() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "addition-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "additiontest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with no tags
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    
+
     // Add tags
     let new_tags = tags(&env, &["first", "second"]);
     client.set_tags(&id, &new_tags);
-    
+
     // Verify event shows empty previous and new tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 0);
     assert_eq!(next_tags.len(), 2);
@@ -2073,31 +2112,37 @@ fn set_tags_event_supports_tag_addition() {
 #[test]
 fn set_tags_event_on_replacement() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "replace-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "replacetest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with initial tags
     let initial_tags = tags(&env, &["old1", "old2"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Replace completely with different tags
     let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
     client.set_tags(&id, &replacement_tags);
-    
+
     // Verify event shows complete replacement
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
     assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
-    
+
     assert_eq!(next_tags.len(), 3);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "new1"));
     assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "new2"));
     assert_eq!(next_tags.get(2).unwrap(), String::from_str(&env, "new3"));
+}
+
 #[test]
 fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();
@@ -2131,32 +2176,4 @@ fn set_terms_hash_rejects_over_max_length() {
         client.try_get_terms_hash(&creator),
         Err(Ok(Error::NotFound))
     );
-}
-
-#[test]
-fn initialize_sets_admin() {
-    let (env, creator, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
-    assert_eq!(client.admin(), admin);
-}
-
-#[test]
-fn initialize_duplicate_rejected() {
-    let (env, _creator, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
-    let other = Address::generate(&env);
-    assert_eq!(
-        client.try_initialize(&other),
-        Err(Ok(Error::AlreadyInitialized))
-    );
-    // Original admin preserved.
-    assert_eq!(client.admin(), admin);
-}
-
-#[test]
-fn admin_uninitialized_returns_not_found() {
-    let (_env, _creator, client) = setup();
-    assert_eq!(client.try_admin(), Err(Ok(Error::NotFound)));
 }
