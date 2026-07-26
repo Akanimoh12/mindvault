@@ -111,6 +111,8 @@ For fast Vitest coverage of the MCP request surface itself (`listTools` / `callT
 
 Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
 
+Every outbound call runs under a configurable `AbortController` deadline, so a hung backend fails fast instead of blocking the agent. See **[docs/mcp-timeouts-retries.md](docs/mcp-timeouts-retries.md)**.
+
 ## Project Structure
 
 ```

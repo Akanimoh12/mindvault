@@ -50,6 +50,13 @@ import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
 import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
 import {
+  describeTimeouts,
+  fetchWithTimeout,
+  resolveTimeouts,
+  withTimeout,
+  type TimeoutService,
+} from "./httpTimeout.js";
+import {
   mapHttpError,
   mapRegistryError,
   mapTransportError,
@@ -102,6 +109,15 @@ const MOCK = mockEnabledFromEnv(process.env);
 const httpFetch: typeof fetch = MOCK
   ? createMockFetch()
   : (input, init) => fetch(input as RequestInfo | URL, init);
+
+// Per-service request deadlines. Every outbound call runs under an
+// AbortController using one of these budgets; see docs/mcp-timeouts-retries.md.
+const TIMEOUTS = resolveTimeouts(process.env);
+
+/** Soroban RPC call under the soroban budget. */
+function sorobanRpcFetch(init: RequestInit): Promise<Response> {
+  return fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, init, "soroban", TIMEOUTS.soroban);
+}
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
@@ -275,6 +291,13 @@ function sourceForUrl(url: string): ErrorSource {
   return "api";
 }
 
+/** Timeout budget that applies to a URL, mirroring sourceForUrl. */
+function timeoutServiceForUrl(url: string): TimeoutService {
+  if (url.startsWith(HORIZON_URL)) return "horizon";
+  if (url.startsWith(SOROBAN_RPC_URL)) return "soroban";
+  return "http";
+}
+
 /** Human name for a service, used when a transport error has no operation label. */
 const SERVICE_OPERATION: Record<ErrorSource, string> = {
   api: "MindVault API request failed",
@@ -303,12 +326,14 @@ async function jsonFetch(
   // rather than that it sent a bad request.
   let res: Response;
   try {
-    res = await httpFetch(url, {
-      ...init,
-      method,
-      body: body ?? init?.body,
-      headers,
-    });
+    const service = timeoutServiceForUrl(url);
+    res = await fetchWithTimeout(
+      httpFetch,
+      url,
+      { ...init, method, body: body ?? init?.body, headers },
+      service,
+      TIMEOUTS[service],
+    );
   } catch (err) {
     const source = sourceForUrl(url);
     throw mcpError(mapTransportError({ operation: SERVICE_OPERATION[source], source, error: err }));
@@ -350,7 +375,9 @@ function makePaidFetch(wallet: AgentWallet) {
   const signer = createEd25519Signer(wallet.secretKey, NETWORK);
   const scheme = new ExactStellarScheme(signer);
   const client = new x402Client().register(NETWORK, scheme);
-  return wrapFetchWithPayment(httpFetch, client);
+  // Paid fetches get the longer `payment` budget because the 402 retry includes
+  // on-chain settlement. They are deliberately never retried — see retry.ts.
+  return wrapFetchWithPayment(withTimeout(httpFetch, "payment", TIMEOUTS.payment), client);
 }
 
 /**
@@ -380,7 +407,13 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
   // transport-error classification apply here as they do to every other call.
   let res: Response;
   try {
-    res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+    res = await fetchWithTimeout(
+      httpFetch,
+      `${HORIZON_URL}/accounts/${publicKey}`,
+      undefined,
+      "horizon",
+      TIMEOUTS.horizon,
+    );
   } catch (err) {
     throw mcpError(
       mapTransportError({
@@ -485,7 +518,13 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
 async function getAccountBalances(
   publicKey: string,
 ): Promise<{ usdc: string; native: string; funded: boolean }> {
-  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  const res = await fetchWithTimeout(
+    httpFetch,
+    `${HORIZON_URL}/accounts/${publicKey}`,
+    undefined,
+    "horizon",
+    TIMEOUTS.horizon,
+  );
   if (!res.ok) return { usdc: "0", native: "0", funded: false };
   const data: any = await res.json();
   const balances: any[] = data.balances ?? [];
@@ -574,7 +613,7 @@ async function insufficientFundsMessage(
 export async function txStatus(txHash: string): Promise<string> {
   const hash = (txHash ?? "").trim();
   if (!hash) return "Provide a transaction hash to look up.";
-  const res = await httpFetch(SOROBAN_RPC_URL, {
+  const res = await sorobanRpcFetch({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1406,6 +1445,9 @@ export function networkProfile(): string {
     horizonUrl: HORIZON_URL,
     registryContractId: REGISTRY_CONTRACT_ID,
     usdcContractId,
+    // Active request deadlines, so an operator diagnosing slow or hanging tools
+    // can see the budgets in effect without reading the environment.
+    timeouts: describeTimeouts(TIMEOUTS),
     warnings,
   };
 
