@@ -149,6 +149,39 @@ fn zero_or_negative_price_rejected() {
 }
 
 #[test]
+fn register_rejects_price_exceeding_max() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "too-pricey");
+    let metadata = String::from_str(&env, "ipfs://x");
+    let over = MAX_PRICE + 1;
+    assert_eq!(
+        client.try_register(&creator, &id, &over, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::PriceExceedsMax))
+    );
+}
+
+#[test]
+fn set_price_rejects_price_exceeding_max() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "r1");
+    client.register(&creator, &id, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env));
+    let over = MAX_PRICE + 1;
+    assert_eq!(
+        client.try_set_price(&id, &over),
+        Err(Ok(Error::PriceExceedsMax))
+    );
+}
+
+#[test]
+fn maximum_price_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "max-price");
+    let metadata = String::from_str(&env, "ipfs://x");
+    client.register(&creator, &id, &MAX_PRICE, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).price, MAX_PRICE);
+}
+
+#[test]
 fn invalid_resource_id_rejected() {
     let (env, creator, client) = setup();
     let metadata = String::from_str(&env, "x");
