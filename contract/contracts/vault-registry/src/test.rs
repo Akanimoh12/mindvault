@@ -1422,17 +1422,12 @@ fn register_rejects_empty_metadata() {
 #[test]
 fn update_metadata_rejects_empty() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "upd-empty");
     let id = String::from_str(&env, "updempty");
     client.register(
         &creator,
         &id,
         &100i128,
         &String::from_str(&env, "ipfs://QmOriginal"),
-        &empty_tags(&env),
-    );
-
-        &String::from_str(&env, "ipfs://valid"),
         &empty_tags(&env),
     );
     let empty = String::from_str(&env, "");
@@ -1443,7 +1438,6 @@ fn update_metadata_rejects_empty() {
     assert_eq!(
         client.get(&id).metadata,
         String::from_str(&env, "ipfs://QmOriginal")
-        String::from_str(&env, "ipfs://valid")
     );
 }
 
@@ -2379,6 +2373,8 @@ fn full_workflow_emits_exactly_the_documented_events() {
          EVENT_SCHEMA (and contract/README.md's Events table) whenever you add, \
          rename, or remove an emitted event"
     );
+}
+
 // ─── Test helpers for the role / verification / freeze / repair suites ────
 
 /// Like `setup`, but also installs `admin` as the contract admin via the
