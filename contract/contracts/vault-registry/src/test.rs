@@ -2177,3 +2177,306 @@ fn set_terms_hash_rejects_over_max_length() {
         Err(Ok(Error::NotFound))
     );
 }
+
+// ─── Test helpers for the role / verification / freeze / repair suites ────
+
+/// Like `setup`, but also installs `admin` as the contract admin via the
+/// bootstrap path of `nominate_new_admin`.
+fn setup_with_admin<'a>() -> (Env, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.nominate_new_admin(&admin);
+    (env, creator, admin, client)
+}
+
+/// Register a resource with a valid cuid2-shaped id and a valid metadata
+/// pointer, no tags. Returns the id.
+fn register_default<'a>(
+    env: &Env,
+    creator: &Address,
+    client: &VaultRegistryClient<'a>,
+    id: &str,
+) -> String {
+    let id = String::from_str(env, id);
+    client.register(
+        creator,
+        &id,
+        &100i128,
+        &String::from_str(env, "ipfs://m"),
+        &empty_tags(env),
+    );
+    id
+}
+
+// ─── Verifier role management (#437) ───────────────────────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_verifier() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let verifier = Address::generate(&env);
+
+    assert!(!client.is_verifier(&verifier));
+
+    client.add_verifier(&verifier);
+    assert!(client.is_verifier(&verifier));
+
+    client.remove_verifier(&verifier);
+    assert!(!client.is_verifier(&verifier));
+}
+
+#[test]
+fn add_verifier_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let verifier = Address::generate(&env);
+    let res = client.try_add_verifier(&verifier);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_verifier_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_verifier(&stranger));
+}
+
+// ─── On-chain verification status mirror (#436) ────────────────────────────
+
+#[test]
+fn resource_starts_pending_and_unfrozen() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "vres0");
+    let resource = client.get(&id);
+    assert_eq!(resource.verified, VerificationStatus::Pending);
+    assert!(!resource.frozen);
+}
+
+#[test]
+fn verifier_can_verify_pending_resource() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres1");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
+}
+
+#[test]
+fn set_verification_status_emits_old_and_new_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres2");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+
+    let all = env.events().all();
+    let (_contract, _topics, data) = all.get_unchecked(all.len() - 1);
+    let decoded: (VerificationStatus, VerificationStatus) =
+        <(VerificationStatus, VerificationStatus)>::try_from_val(&env, &data)
+            .expect("failed to decode verification event");
+    assert_eq!(decoded.0, VerificationStatus::Pending);
+    assert_eq!(decoded.1, VerificationStatus::Verified);
+}
+
+#[test]
+fn non_verifier_cannot_set_verification_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres3");
+    let stranger = Address::generate(&env);
+
+    let res = client.try_set_verification_status(&id, &stranger, &VerificationStatus::Verified);
+    assert_eq!(res, Err(Ok(Error::NotVerifier)));
+    assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
+}
+
+#[test]
+fn revoked_verifier_cannot_set_verification_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres4");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+    client.remove_verifier(&verifier);
+
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(res, Err(Ok(Error::NotVerifier)));
+}
+
+#[test]
+fn verification_self_transition_rejected() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres5");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    // Pending -> Pending is a no-op and rejected as invalid.
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
+}
+
+#[test]
+fn verification_cannot_revert_to_pending() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres6");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
+}
+
+#[test]
+fn verification_round_trip_verified_rejected_verified() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres7");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Rejected);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Rejected);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
+}
+
+#[test]
+fn verification_status_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    let res = client.try_set_verification_status(
+        &String::from_str(&env, "nosuchresource"),
+        &verifier,
+        &VerificationStatus::Verified,
+    );
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ─── Metadata freeze (#438) ────────────────────────────────────────────────
+
+#[test]
+fn freeze_metadata_sets_flag_and_emits_event() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres0");
+
+    client.freeze_metadata(&id);
+    // Checked immediately after the write, before any other invocation
+    // (e.g. a read call) rolls the per-invocation event log forward.
+    assert_eq!(env.events().all().len(), 1);
+    assert!(client.get(&id).frozen);
+}
+
+#[test]
+fn freeze_metadata_twice_fails() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres1");
+    client.freeze_metadata(&id);
+
+    let res = client.try_freeze_metadata(&id);
+    assert_eq!(res, Err(Ok(Error::AlreadyFrozen)));
+}
+
+#[test]
+fn update_metadata_on_frozen_resource_fails() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres2");
+    client.freeze_metadata(&id);
+
+    let res = client.try_update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(res, Err(Ok(Error::MetadataFrozen)));
+}
+
+#[test]
+fn frozen_resource_still_allows_price_listing_tags_and_ownership_mutations() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres3");
+    client.freeze_metadata(&id);
+
+    client.set_price(&id, &500i128);
+    assert_eq!(client.get(&id).price, 500i128);
+
+    client.set_listed(&id, &false);
+    assert!(!client.get(&id).listed);
+
+    client.set_tags(&id, &tags(&env, &["dataset"]));
+    assert_eq!(client.get(&id).tags.len(), 1);
+
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.get(&id).creator, new_owner);
+
+    // Frozen state survives all of the above.
+    assert!(client.get(&id).frozen);
+}
+
+// ─── Index repair (#428) ───────────────────────────────────────────────────
+
+#[test]
+fn repair_index_rebuilds_from_authoritative_list() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres0a");
+    let b = register_default(&env, &creator, &client, "rres0b");
+    let c = register_default(&env, &creator, &client, "rres0c");
+
+    client.repair_index(&Vec::from_array(&env, [c.clone(), a.clone()]));
+
+    assert_eq!(client.count(), 2);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, c);
+    assert_eq!(page.get(1).unwrap().id, a);
+
+    // repair only rewrites the derived index — the dropped resource `b` is
+    // still directly addressable by id.
+    assert!(client.exists(&b));
+    assert_eq!(client.get(&b).id, b);
+}
+
+#[test]
+fn repair_index_rejects_unknown_id() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres1a");
+
+    let res = client.try_repair_index(&Vec::from_array(
+        &env,
+        [a.clone(), String::from_str(&env, "ghost")],
+    ));
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+    // No partial write: the index is untouched.
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, a);
+}
+
+#[test]
+fn repair_index_rejects_duplicates() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres2a");
+
+    let res = client.try_repair_index(&Vec::from_array(&env, [a.clone(), a.clone()]));
+    assert_eq!(res, Err(Ok(Error::DuplicateInRepair)));
+}
+
+#[test]
+fn repair_index_before_admin_set_fails() {
+    let (env, creator, client) = setup();
+    let a = register_default(&env, &creator, &client, "rres3a");
+
+    let res = client.try_repair_index(&Vec::from_array(&env, [a.clone()]));
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn repair_index_rerunning_current_list_is_a_safe_noop() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres4a");
+    let b = register_default(&env, &creator, &client, "rres4b");
+
+    client.repair_index(&Vec::from_array(&env, [a.clone(), b.clone()]));
+    assert_eq!(client.count(), 2);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.get(0).unwrap().id, a);
+    assert_eq!(page.get(1).unwrap().id, b);
+}

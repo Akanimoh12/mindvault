@@ -23,6 +23,14 @@ pub struct Resource {
     pub metadata: String,  // pointer (supported URI or content-hash form), max 512 bytes, non-empty
     pub listed: bool,      // whether the resource is available for discovery/purchase
     pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
+    pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
+    pub frozen: bool,      // once true, update_metadata is permanently rejected
+}
+
+pub enum VerificationStatus {
+    Pending,
+    Verified,
+    Rejected,
 }
 ```
 
@@ -46,9 +54,10 @@ returns only the `items` body for existing callers.
 
 | Function | Auth | Args | Returns | Description |
 |----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata, tags)` | `creator` | `creator: Address`; `id: String` — unique cuid2 (1-24 lowercase letters/digits); `price: i128` — USDC stroops, `0 < price <= MAX_PRICE`; `metadata: String` — non-empty pointer (max 512 bytes); `tags: Vec<String>` — max 8 tags, each max 32 bytes | `Result<(), Error>` | Register a new resource. Resources are listed by default. Reserved IDs (`admin`, `null`, `registry`, `api`, `index`, `root`, `system`, case-insensitive) are rejected. |
+| `register(creator, id, price, metadata, tags)` | `creator` | `creator: Address`; `id: String` — unique cuid2 (1-24 lowercase letters/digits); `price: i128` — USDC stroops, `0 < price <= MAX_PRICE`; `metadata: String` — non-empty pointer (max 512 bytes); `tags: Vec<String>` — max 8 tags, each max 32 bytes | `Result<(), Error>` | Register a new resource. Resources are listed by default, start `Pending` verification, and start unfrozen. Reserved IDs (`admin`, `null`, `registry`, `api`, `index`, `root`, `system`, case-insensitive) are rejected. |
 | `set_price(id, new_price)` | `creator` | `id: String`; `new_price: i128` — `0 < new_price <= MAX_PRICE` | `Result<(), Error>` | Update the resource price. Emits `setprice` with the old and new price. |
-| `update_metadata(id, metadata)` | `creator` | `id: String`; `metadata: String` — new pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Update the metadata pointer. Emits `updmeta` with the old and new pointer. |
+| `update_metadata(id, metadata)` | `creator` | `id: String`; `metadata: String` — new pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Update the metadata pointer. Emits `updmeta` with the old and new pointer. Errors `MetadataFrozen` once `freeze_metadata` has been called. |
+| `freeze_metadata(id)` | `creator` | `id: String` | `Result<(), Error>` | Permanently freeze the metadata pointer — `update_metadata` errors afterward. Irreversible; errors `AlreadyFrozen` if called twice. Price, listing, tags, and ownership stay mutable. Emits `freeze`. |
 | `set_tags(id, tags)` | `creator` | `id: String`; `tags: Vec<String>` — max 8 tags, each max 32 bytes | `Result<(), Error>` | Replace discovery tags. Does not touch `metadata`. Emits `settags` with the previous and next tag lists. |
 | `transfer_ownership(id, new_creator)` | `creator` | `id: String`; `new_creator: Address` | `Result<(), Error>` | Transfer resource ownership immediately. Errors `AlreadyOwner` if `new_creator` already owns it. Clears any pending `propose_transfer` for the resource. |
 | `propose_transfer(id, new_creator)` | `creator` | `id: String`; `new_creator: Address` | `Result<(), Error>` | Propose a two-step transfer; takes effect only once `new_creator` calls `accept_transfer`. |
@@ -71,6 +80,18 @@ returns only the `items` body for existing callers.
 | `accept_admin(new_admin)` | pending admin | `new_admin: Address` | `Result<(), Error>` | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination. |
 | `set_terms_hash(creator, terms_hash)` | `creator` | `creator: Address`; `terms_hash: String` — max 64 bytes | `Result<(), Error>` | Store a hash of the creator's accepted marketplace terms. |
 | `get_terms_hash(creator)` | — | `creator: Address` | `Result<String, Error>` | Fetch a creator's terms hash. Errors `NotFound` if absent. |
+| `set_verification_status(id, verifier, status)` | `verifier` | `id: String`; `verifier: Address`; `status: VerificationStatus` | `Result<(), Error>` | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
+| `add_verifier(verifier)` | `admin` | `verifier: Address` | `Result<(), Error>` | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet. |
+| `remove_verifier(verifier)` | `admin` | `verifier: Address` | `Result<(), Error>` | Revoke the verifier role. |
+| `is_verifier(address)` | — | `address: Address` | `bool` | Whether `address` currently holds the verifier role. |
+| `repair_index(ids)` | `admin` | `ids: Vec<String>` — authoritative ordered id list | `Result<(), Error>` | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md). |
+
+### Roles
+
+Two roles sit alongside the per-resource `creator` and the pre-existing admin:
+
+- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`) and repair the pagination index (`repair_index`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
+- **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
 
 ### Error codes
 
@@ -93,6 +114,12 @@ returns only the `items` body for existing callers.
 | `15` | `NoPendingTransfer` | `accept_transfer`/`cancel_transfer` called with no pending proposal. |
 | `16` | `ReservedId` | Resource ID matches a reserved word (`admin`, `null`, `registry`, `api`, `index`, `root`, `system`), case-insensitive. |
 | `17` | `PriceExceedsMax` | Price exceeds `MAX_PRICE` (10^18 stroops). |
+| `18` | `AdminNotSet` | `add_verifier`/`remove_verifier`/`repair_index` called before any admin has been set via `nominate_new_admin`. |
+| `19` | `NotVerifier` | Caller does not currently hold the verifier role. |
+| `20` | `InvalidVerificationTransition` | Requested verification status transition isn't one of the four allowed transitions. |
+| `21` | `AlreadyFrozen` | `freeze_metadata` called on a resource that is already frozen. |
+| `22` | `MetadataFrozen` | `update_metadata` called on a resource that has been frozen. |
+| `23` | `DuplicateInRepair` | `repair_index`'s id list contains the same id more than once. |
 
 ### Events
 
@@ -112,6 +139,11 @@ All events use the topic `(symbol, id)` (or `(symbol,)` for admin/no-id actions)
 | `nomadmin` | `new_admin: Address` | Subsequent `nominate_new_admin()` calls |
 | `accadmin` | `new_admin: Address` | `accept_admin()` succeeds |
 | `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
+| `freeze` | `()` | `freeze_metadata()` succeeds |
+| `verify` | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds |
+| `addverif` | `true` | `add_verifier()` succeeds |
+| `rmverif` | `false` | `remove_verifier()` succeeds |
+| `reindex` | `new_count: u32` (topic carries `old_count: u32`) | `repair_index()` succeeds |
 
 Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted` event
 — `delist` is a thin convenience wrapper around `set_listed`.
@@ -131,10 +163,14 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 
 ### WASM size budget
 
-This contract enforces a strictly tracked optimized WASM size budget in CI.
-Currently the limit is **10,240 bytes (10 KB)**. If genuine feature additions push
-past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and explain the
-growth in your PR description.
+This contract enforces a strictly tracked optimized WASM size budget in CI
+(`stellar contract build --optimize`). Currently the limit is **28,672 bytes
+(28 KB)** — raised from a stale 10 KB figure that had already been exceeded
+by the accumulated tags/pagination/admin/terms-hash surface before this round
+of changes (~5 KB of headroom above the current optimized size of ~23 KB). If
+genuine feature additions push past it, raise `MAX_SIZE` in
+`.github/workflows/contract-ci.yml` and explain the growth in your PR
+description.
 
 ### Emergency pause
 
@@ -197,9 +233,10 @@ Set `VAULT_REGISTRY_CONTRACT_ID` and `SOROBAN_RPC_URL` in the server `.env`
 record/read resources on this contract.
 
 > **Note:** the deployment above predates `tags`, the two-step admin/transfer
-> flows, `creator_resource_count`, and terms hashes described in this README.
-> Redeploy from current source and update this table (plus
-> `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
+> flows, `creator_resource_count`, terms hashes, the verifier role, the
+> on-chain verification mirror, metadata freezing, and index repair
+> described in this README. Redeploy from current source and update this
+> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
 > `pnpm contract:bindings`) to pick them up.
 
 ### Ideas for contributors
