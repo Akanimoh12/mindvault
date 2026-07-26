@@ -109,6 +109,8 @@ To verify the whole flow automatically, run the smoke test (`pnpm --filter @mind
 
 For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
 
+Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
+
 ## Project Structure
 
 ```

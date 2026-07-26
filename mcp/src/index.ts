@@ -49,6 +49,14 @@ import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
 import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
+import {
+  mapHttpError,
+  mapRegistryError,
+  mapTransportError,
+  mcpError,
+  throwHttpError,
+  type ErrorSource,
+} from "./errorMapping.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -256,6 +264,27 @@ loadState();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Which subsystem a URL belongs to, so a transport failure is attributed to the
+ * service that actually went down rather than a generic "fetch failed".
+ */
+function sourceForUrl(url: string): ErrorSource {
+  if (url.startsWith(SPONSORED_ACCOUNT_URL)) return "sponsored";
+  if (url.startsWith(HORIZON_URL)) return "horizon";
+  if (url.startsWith(SOROBAN_RPC_URL)) return "soroban";
+  return "api";
+}
+
+/** Human name for a service, used when a transport error has no operation label. */
+const SERVICE_OPERATION: Record<ErrorSource, string> = {
+  api: "MindVault API request failed",
+  horizon: "Horizon request failed",
+  soroban: "Soroban RPC request failed",
+  sponsored: "Sponsored-account request failed",
+  x402: "x402 payment request failed",
+  registry: "Registry request failed",
+};
+
 async function jsonFetch(
   url: string,
   init?: RequestInit,
@@ -269,12 +298,22 @@ async function jsonFetch(
   };
   const headers = signMutatingHeaders(url, method, baseHeaders, body);
 
-  const res = await httpFetch(url, {
-    ...init,
-    method,
-    body: body ?? init?.body,
-    headers,
-  });
+  // Transport failures (DNS, refused connection, abort) never reach the caller
+  // raw — they are classified so the agent knows the service was unreachable
+  // rather than that it sent a bad request.
+  let res: Response;
+  try {
+    res = await httpFetch(url, {
+      ...init,
+      method,
+      body: body ?? init?.body,
+      headers,
+    });
+  } catch (err) {
+    const source = sourceForUrl(url);
+    throw mcpError(mapTransportError({ operation: SERVICE_OPERATION[source], source, error: err }));
+  }
+
   const responseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {
     responseHeaders[key.toLowerCase()] = value;
@@ -337,7 +376,20 @@ interface BalanceDetails {
  * agent-facing output.
  */
 async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
-  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  // Routed through httpFetch (not the bare global) so mock mode, timeouts, and
+  // transport-error classification apply here as they do to every other call.
+  let res: Response;
+  try {
+    res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  } catch (err) {
+    throw mcpError(
+      mapTransportError({
+        operation: "Horizon request failed",
+        source: "horizon",
+        error: err,
+      }),
+    );
+  }
 
   // Account does not exist (never funded with XLM).
   if (res.status === 404) {
@@ -352,7 +404,12 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
   }
 
   if (!res.ok) {
-    throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
+    throwHttpError({
+      operation: `Horizon error ${res.status}`,
+      source: "horizon",
+      status: res.status,
+      data: await res.text().catch(() => null),
+    });
   }
 
   const data: any = await res.json();
@@ -527,9 +584,22 @@ export async function txStatus(txHash: string): Promise<string> {
       params: { hash },
     }),
   });
-  if (!res.ok) throw new Error(`Soroban RPC error: ${res.status}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: `Soroban RPC error: ${res.status}`,
+      source: "soroban",
+      status: res.status,
+      data: await res.text().catch(() => null),
+    });
   const data: any = await res.json();
-  if (data.error) throw new Error(`RPC error: ${JSON.stringify(data.error)}`);
+  if (data.error)
+    throw mcpError(
+      mapRegistryError({
+        operation: "RPC error",
+        message: JSON.stringify(data.error),
+        source: "soroban",
+      }),
+    );
   const tx = data.result;
   if (tx.status === "NOT_FOUND") {
     return JSON.stringify(
@@ -567,7 +637,13 @@ export async function txStatus(txHash: string): Promise<string> {
 async function setupWallet(profileArg?: string): Promise<string> {
   const target = resolveProfileName(profileArg);
   const res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}/create`, { method: "POST" });
-  if (!res.ok) throw new Error(`Failed to create wallet: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Failed to create wallet",
+      source: "sponsored",
+      status: res.status,
+      data: res.data,
+    });
   activeProfileName = target;
   activeProfile().wallet = { publicKey: res.data.publicKey, secretKey: res.data.secretKey };
   saveState();
@@ -639,7 +715,13 @@ export function listProfiles(): string {
 
 export async function browse(): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources`);
-  if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Browse failed",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
   const items: any[] = res.data;
   const body =
     items.length === 0 ? "No resources listed yet." : items.map(formatResource).join("\n\n");
@@ -662,7 +744,13 @@ export async function search(filtersOrQuery: string | SearchFilters): Promise<st
   if (filters.resourceType) queryParams.set("resourceType", filters.resourceType);
 
   const res = await jsonFetch(`${BASE_URL}/resources?${queryParams.toString()}`);
-  if (!res.ok) throw new Error(`Search failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Search failed",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
   let items: any[] = res.data;
 
   // Filter client-side as well for unit tests compatibility
@@ -675,7 +763,13 @@ export async function search(filtersOrQuery: string | SearchFilters): Promise<st
 
 export async function preview(resourceId: string): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
-  if (!res.ok) throw new Error(`Preview failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Preview failed",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
   const r = res.data;
   return JSON.stringify(
     {
@@ -698,7 +792,13 @@ async function register(name: string, email: string, walletAddress?: string): Pr
     method: "POST",
     body: JSON.stringify({ name, email, walletAddress: walletAddress ?? wallet.publicKey }),
   });
-  if (!res.ok) throw new Error(`Register failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Register failed",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
   activeProfile().apiKey = res.data.apiKey;
   saveState();
   return `Registered as publisher.\nProfile: ${activeProfileName}\nID: ${res.data.id}\nAPI key persisted to ${STATE_FILE} (not shown). Run mindvault_reset to revoke.`;
@@ -724,7 +824,13 @@ async function publish(args: {
       externalUrl: args.externalUrl,
     }),
   });
-  if (!createRes.ok) throw new Error(`Publish failed: ${JSON.stringify(createRes.data)}`);
+  if (!createRes.ok)
+    throwHttpError({
+      operation: "Publish failed",
+      source: "api",
+      status: createRes.status,
+      data: createRes.data,
+    });
   const resource = createRes.data;
 
   // Step 2: Agent wallet signs the x402 payment for verification. Check funds
@@ -867,11 +973,24 @@ export async function buy(resourceId: string): Promise<string> {
     : null;
 
   const paidFetch = makePaidFetch(wallet);
-  const res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
+  let res: Response;
+  try {
+    res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
+  } catch (err) {
+    metrics.recordPayment(false);
+    throw mcpError(mapTransportError({ operation: "Buy failed", source: "x402", error: err }));
+  }
   metrics.recordPayment(res.ok);
   if (!res.ok) {
+    // A 402 here means the payment itself was refused (typically an underfunded
+    // wallet), which is a different recovery path from a plain API error.
     const text = await res.text();
-    throw new Error(`Buy failed [${res.status}]: ${text}`);
+    throwHttpError({
+      operation: `Buy failed [${res.status}]`,
+      source: "x402",
+      status: res.status,
+      data: text,
+    });
   }
   const afterData = await res.json();
 
@@ -907,24 +1026,25 @@ export async function registerOnchain(resourceId: string): Promise<string> {
     headers: { "x-api-key": apiKey },
   });
   if (!prep.ok) {
-    const detail =
-      prep.data && typeof prep.data === "object"
-        ? (prep.data.error ?? JSON.stringify(prep.data))
-        : prep.data;
-    // Surface the server's actionable reasons (not verified / already registered).
-    throw new Error(
-      [
-        `Could not prepare on-chain registration for "${resourceId}" [${prep.status}].`,
-        `Reason: ${detail}`,
-        prep.status === 400 ? "The resource must be verified before it can be registered." : null,
-        prep.status === 409
-          ? "The resource is already registered on-chain — no action needed."
-          : null,
-        prep.status === 403 ? "This resource is owned by a different publisher." : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+    // Keep the endpoint-specific guidance (not verified / already registered /
+    // wrong owner) and let the mapper add the classification and next step.
+    const mapped = mapHttpError({
+      operation: `Could not prepare on-chain registration for "${resourceId}" [${prep.status}]`,
+      source: "api",
+      status: prep.status,
+      data: prep.data,
+    });
+    const specific = [
+      prep.status === 400 ? "The resource must be verified before it can be registered." : null,
+      prep.status === 409
+        ? "The resource is already registered on-chain — no action needed."
+        : null,
+      prep.status === 403 ? "This resource is owned by a different publisher." : null,
+    ].filter(Boolean);
+    throw mcpError({
+      ...mapped,
+      action: [...specific, mapped.action].join(" "),
+    });
   }
 
   const { unsignedXdr, networkPassphrase } = prep.data ?? {};
@@ -948,21 +1068,23 @@ export async function registerOnchain(resourceId: string): Promise<string> {
     body: JSON.stringify({ signedXdr }),
   });
   if (!submit.ok) {
-    const detail =
-      submit.data && typeof submit.data === "object"
-        ? (submit.data.detail ?? submit.data.error ?? JSON.stringify(submit.data))
-        : submit.data;
     const txHash = submit.data && typeof submit.data === "object" ? submit.data.txHash : undefined;
-    throw new Error(
-      [
-        `On-chain registration failed for "${resourceId}" [${submit.status}].`,
-        `Reason: ${detail}`,
-        txHash ? `Tx hash: ${txHash} (check with mindvault_tx_status)` : null,
-        "The resource remains listed and purchasable. Ensure the agent wallet is funded for fees and retry.",
+    const mapped = mapHttpError({
+      operation: `On-chain registration failed for "${resourceId}" [${submit.status}]`,
+      source: "api",
+      status: submit.status,
+      data: submit.data,
+    });
+    throw mcpError({
+      ...mapped,
+      action: [
+        "The resource remains listed and purchasable.",
+        "Ensure the agent wallet is funded for fees and retry.",
+        txHash ? `Tx hash: ${txHash} (check with mindvault_tx_status).` : null,
       ]
         .filter(Boolean)
-        .join("\n"),
-    );
+        .join(" "),
+    });
   }
 
   const summary = {
@@ -985,7 +1107,13 @@ export async function registerOnchain(resourceId: string): Promise<string> {
 
 async function agentStatus(): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/agent/status`);
-  if (!res.ok) throw new Error(`Agent status failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok)
+    throwHttpError({
+      operation: "Agent status failed",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
   return JSON.stringify(res.data, null, 2);
 }
 
@@ -998,7 +1126,7 @@ function stroopsToUsdc(stroops: bigint): string {
   return `${negative ? "-" : ""}${whole}.${frac.toString().padStart(7, "0")}`;
 }
 
-async function registryLookup(resourceId: string): Promise<string> {
+export async function registryLookup(resourceId: string): Promise<string> {
   if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1010,14 +1138,14 @@ async function registryLookup(resourceId: string): Promise<string> {
   try {
     tx = await client.get({ id: resourceId });
   } catch (err: any) {
-    throw new Error(
-      [
-        `On-chain lookup failed for resource "${resourceId}".`,
-        `Contract: ${REGISTRY_CONTRACT_ID}`,
-        `Network: ${REGISTRY_NETWORK_PASSPHRASE}`,
-        `RPC: ${SOROBAN_RPC_URL}`,
-        `Details: ${err.message}`,
-      ].join("\n"),
+    // The client could not reach the RPC at all — a transport problem, not a
+    // contract-level rejection, so it is classified against the Soroban source.
+    throw mcpError(
+      mapTransportError({
+        operation: `On-chain lookup failed for resource "${resourceId}" (contract ${REGISTRY_CONTRACT_ID}, RPC ${SOROBAN_RPC_URL})`,
+        source: "soroban",
+        error: err,
+      }),
     );
   }
 
@@ -1025,12 +1153,19 @@ async function registryLookup(resourceId: string): Promise<string> {
   if (result.isErr()) {
     const err = result.unwrapErr();
     if (err.message === RegistryErrors[2].message) {
+      // A missing registry entry stays a successful tool result (soft miss), but
+      // carries the same recovery action an agent would get from a hard error.
       return JSON.stringify(
         {
           source: "on-chain",
           found: false,
           resourceId,
           message: `Resource "${resourceId}" is not registered on-chain. It may not have been listed yet or the ID may be incorrect.`,
+          next: mapRegistryError({
+            operation: "Registry lookup",
+            message: err.message,
+            notFound: true,
+          }).action,
           contract: REGISTRY_CONTRACT_ID,
           network: REGISTRY_NETWORK_PASSPHRASE,
           rpc: SOROBAN_RPC_URL,
@@ -1039,12 +1174,11 @@ async function registryLookup(resourceId: string): Promise<string> {
         2,
       );
     }
-    throw new Error(
-      [
-        `Contract error for resource "${resourceId}": ${err.message}`,
-        `Contract: ${REGISTRY_CONTRACT_ID}`,
-        `Network: ${REGISTRY_NETWORK_PASSPHRASE}`,
-      ].join("\n"),
+    throw mcpError(
+      mapRegistryError({
+        operation: `Contract error for resource "${resourceId}" (contract ${REGISTRY_CONTRACT_ID}, network ${REGISTRY_NETWORK_PASSPHRASE})`,
+        message: err.message,
+      }),
     );
   }
 
