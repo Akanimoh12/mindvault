@@ -1,0 +1,486 @@
+/**
+ * Argument validation for the MindVault MCP tool surface.
+ *
+ * Every tool used to read its arguments straight off an untyped `any` bag
+ * (`args.resourceId as string`), so a missing, misspelled, or wrongly-typed
+ * argument travelled deep into the tool before failing — as an HTTP 400, a
+ * malformed URL, or (worse) silently, by dropping an argument the agent
+ * believed it had passed. This module validates the whole bag up front,
+ * against one declarative spec per tool, and produces a single deterministic
+ * error listing every problem.
+ *
+ * Design rules:
+ *
+ *   - Specs are data (`TOOL_ARGUMENT_SPECS`), not code, and cover every tool
+ *     advertised in `TOOL_DEFINITIONS`. A test enforces both directions so a
+ *     new tool cannot ship without validation.
+ *   - Validation is strict: unknown argument names are rejected rather than
+ *     ignored, so a typo is reported instead of silently changing behavior.
+ *   - Errors are deterministic: issues are reported in spec order with stable
+ *     codes and messages, so the same bad call always yields the same text.
+ *   - Errors are agent-safe: they name the field, the reason, and the expected
+ *     shape. Rejected values are never echoed back, so a mistyped passphrase
+ *     or secret key cannot leak into a transcript.
+ *   - Values are normalized on the way out: strings are trimmed, flags are
+ *     coerced to booleans, digests are canonicalized.
+ *
+ * The module is pure — no I/O, no globals — so it is unit-testable on its own.
+ */
+
+import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
+import { TOOL_DEFINITIONS } from "./tools.js";
+
+// ── Spec model ────────────────────────────────────────────────────────────────
+
+/**
+ * Argument kinds.
+ *
+ * - `string` — free text, trimmed; optional pattern/length constraints
+ * - `enum`   — one of a fixed set of literals
+ * - `flag`   — boolean, also accepting the unambiguous string/number spellings
+ *              MCP clients commonly send (`"true"`, `"1"`, `"yes"`, `0`, …)
+ * - `hash`   — a metadata digest in the fixed format (see metadataHash.ts),
+ *              normalized to its canonical `"<algorithm>:<hex>"` form
+ */
+export type ArgumentKind = "string" | "enum" | "flag" | "hash";
+
+export interface ArgumentSpec {
+  kind: ArgumentKind;
+  required?: boolean;
+  /** Allowed literals — `enum` only. */
+  values?: readonly string[];
+  /** Minimum length after trimming — `string` only (default 1 when required). */
+  minLength?: number;
+  /** Maximum length after trimming — `string` only. */
+  maxLength?: number;
+  /** Shape the value must match — `string` only. */
+  pattern?: RegExp;
+  /** Human-readable description of `pattern`, used in the error message. */
+  patternHint?: string;
+  /**
+   * Keep the canonical hex-only form of a digest instead of the
+   * `"<algorithm>:<hex>"` spelling — `hash` only. Used where a downstream
+   * service expects a bare digest (e.g. a Stellar transaction hash).
+   */
+  bareHex?: boolean;
+}
+
+export type ToolArgumentSpec = Record<string, ArgumentSpec>;
+
+// ── Shared field shapes ───────────────────────────────────────────────────────
+
+/**
+ * Resource ids are interpolated directly into API paths, so they are
+ * restricted to characters that cannot alter the request path.
+ */
+const RESOURCE_ID: ArgumentSpec = {
+  kind: "string",
+  required: true,
+  maxLength: 128,
+  pattern: /^[A-Za-z0-9._-]+$/,
+  patternHint: "letters, digits, dot, dash, or underscore (max 128 chars)",
+};
+
+/** Same rules as profiles.isValidProfileName, expressed as a spec. */
+const PROFILE_NAME: ArgumentSpec = {
+  kind: "string",
+  maxLength: 64,
+  pattern: /^[A-Za-z0-9._-]+$/,
+  patternHint: "letters, digits, dot, dash, or underscore (1–64 chars)",
+};
+
+/** Decimal USDC amount as a string, e.g. "5", "0.50". */
+const USDC_AMOUNT: ArgumentSpec = {
+  kind: "string",
+  maxLength: 32,
+  pattern: /^\d+(\.\d+)?$/,
+  patternHint: 'a non-negative decimal amount in USDC, e.g. "5.00"',
+};
+
+/** Confirmation flag for mainnet mutations (see mainnetGuardrails.ts). */
+const CONFIRM_MAINNET: ArgumentSpec = { kind: "flag" };
+
+/** Backup passphrases must survive a round-trip through stateBackup.ts. */
+const PASSPHRASE: ArgumentSpec = { kind: "string", required: true, minLength: 8, maxLength: 512 };
+
+// ── Per-tool specs ────────────────────────────────────────────────────────────
+
+/**
+ * The validation contract for every public tool. Key order is the order in
+ * which problems are reported, which keeps multi-issue errors deterministic.
+ */
+export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
+  mindvault_setup_wallet: { profile: PROFILE_NAME, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_wallet_info: {},
+  mindvault_use_profile: { name: { ...PROFILE_NAME, required: true } },
+  mindvault_list_profiles: {},
+  mindvault_browse: {},
+  mindvault_search: {
+    query: { kind: "string", required: true, maxLength: 256 },
+    minPrice: USDC_AMOUNT,
+    maxPrice: USDC_AMOUNT,
+    verificationStatus: {
+      kind: "enum",
+      values: ["pending", "verified", "rejected", "skipped"],
+    },
+    resourceType: { kind: "enum", values: ["file", "link"] },
+  },
+  mindvault_preview: { resourceId: RESOURCE_ID },
+  mindvault_register: {
+    name: { kind: "string", required: true, maxLength: 128 },
+    email: {
+      kind: "string",
+      required: true,
+      maxLength: 254,
+      pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+      patternHint: "an email address, e.g. agent@example.com",
+    },
+    walletAddress: {
+      kind: "string",
+      maxLength: 56,
+      pattern: /^G[A-Z2-7]{55}$/,
+      patternHint: "a Stellar public key (G… , 56 chars)",
+    },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_publish: {
+    title: { kind: "string", required: true, maxLength: 256 },
+    description: { kind: "string", maxLength: 2048 },
+    price: { ...USDC_AMOUNT, required: true },
+    externalUrl: {
+      kind: "string",
+      required: true,
+      maxLength: 2048,
+      pattern: /^https?:\/\/[^\s]+$/,
+      patternHint: "an http(s) URL, e.g. https://example.com/data.json",
+    },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_buy: { resourceId: RESOURCE_ID, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_register_onchain: { resourceId: RESOURCE_ID, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_agent_status: {},
+  mindvault_registry_info: {},
+  mindvault_network_profile: {},
+  mindvault_check_bindings: {},
+  mindvault_check_consistency: {
+    resourceId: RESOURCE_ID,
+    expectedMetadataHash: { kind: "hash" },
+  },
+  mindvault_registry_lookup: { resourceId: RESOURCE_ID },
+  mindvault_tx_status: { txHash: { kind: "hash", required: true, bareHex: true } },
+  mindvault_reset: { all: { kind: "flag" }, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_backup_state: { passphrase: PASSPHRASE },
+  mindvault_restore_state: {
+    blob: { kind: "string", required: true, maxLength: 1_048_576 },
+    passphrase: PASSPHRASE,
+  },
+  mindvault_metrics: { reset: { kind: "flag" } },
+};
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+/** Stable issue identifiers. Safe for clients to branch on. */
+export type ValidationIssueCode =
+  | "not_an_object"
+  | "unknown_argument"
+  | "missing_required"
+  | "wrong_type"
+  | "empty_string"
+  | "too_short"
+  | "too_long"
+  | "pattern_mismatch"
+  | "not_in_enum"
+  | "invalid_hash";
+
+export interface ValidationIssue {
+  field: string;
+  code: ValidationIssueCode;
+  message: string;
+}
+
+/** Raised when a tool is called with arguments that fail its spec. */
+export class ToolValidationError extends Error {
+  readonly tool: string;
+  readonly issues: ValidationIssue[];
+
+  constructor(tool: string, issues: ValidationIssue[]) {
+    super(`Invalid arguments for ${tool}: ${issues.map((i) => i.message).join(" ")}`);
+    this.name = "ToolValidationError";
+    this.tool = tool;
+    this.issues = issues;
+  }
+}
+
+/** Raised when a call names a tool this server does not expose. */
+export class UnknownToolError extends Error {
+  readonly tool: string;
+
+  constructor(tool: string) {
+    super(
+      `Unknown tool: ${tool}. Available tools: ${Object.keys(TOOL_ARGUMENT_SPECS).sort().join(", ")}.`,
+    );
+    this.name = "UnknownToolError";
+    this.tool = tool;
+  }
+}
+
+// ── Validation ────────────────────────────────────────────────────────────────
+
+const TRUE_STRINGS = new Set(["true", "1", "yes", "on"]);
+const FALSE_STRINGS = new Set(["false", "0", "no", "off"]);
+
+function typeName(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** Describe a spec's expected shape for an error message. Never includes values. */
+function expectation(spec: ArgumentSpec): string {
+  switch (spec.kind) {
+    case "enum":
+      return `one of: ${(spec.values ?? []).join(", ")}`;
+    case "flag":
+      return "a boolean (true/false)";
+    case "hash":
+      return METADATA_HASH_FORMAT_HINT;
+    case "string": {
+      if (spec.patternHint) return spec.patternHint;
+      if (spec.maxLength) return `a string of up to ${spec.maxLength} characters`;
+      return "a string";
+    }
+  }
+}
+
+function validateFlag(
+  field: string,
+  value: unknown,
+  issues: ValidationIssue[],
+): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && (value === 0 || value === 1)) return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (TRUE_STRINGS.has(normalized)) return true;
+    if (FALSE_STRINGS.has(normalized)) return false;
+  }
+  issues.push({
+    field,
+    code: "wrong_type",
+    message: `${field} must be a boolean (true/false); received ${typeName(value)}.`,
+  });
+  return undefined;
+}
+
+function validateString(
+  field: string,
+  value: unknown,
+  spec: ArgumentSpec,
+  issues: ValidationIssue[],
+): string | undefined {
+  if (typeof value !== "string") {
+    issues.push({
+      field,
+      code: "wrong_type",
+      message: `${field} must be a string; received ${typeName(value)}.`,
+    });
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  const minLength = spec.minLength ?? 1;
+
+  if (trimmed.length === 0) {
+    issues.push({
+      field,
+      code: "empty_string",
+      message: `${field} must not be empty. Expected ${expectation(spec)}.`,
+    });
+    return undefined;
+  }
+  if (trimmed.length < minLength) {
+    issues.push({
+      field,
+      code: "too_short",
+      message: `${field} must be at least ${minLength} characters.`,
+    });
+    return undefined;
+  }
+  if (spec.maxLength !== undefined && trimmed.length > spec.maxLength) {
+    issues.push({
+      field,
+      code: "too_long",
+      message: `${field} must be at most ${spec.maxLength} characters; received ${trimmed.length}.`,
+    });
+    return undefined;
+  }
+  if (spec.pattern && !spec.pattern.test(trimmed)) {
+    issues.push({
+      field,
+      code: "pattern_mismatch",
+      message: `${field} is malformed. Expected ${expectation(spec)}.`,
+    });
+    return undefined;
+  }
+  return trimmed;
+}
+
+function validateEnum(
+  field: string,
+  value: unknown,
+  spec: ArgumentSpec,
+  issues: ValidationIssue[],
+): string | undefined {
+  const values = spec.values ?? [];
+  if (typeof value !== "string") {
+    issues.push({
+      field,
+      code: "wrong_type",
+      message: `${field} must be a string; received ${typeName(value)}.`,
+    });
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!values.includes(trimmed)) {
+    issues.push({
+      field,
+      code: "not_in_enum",
+      message: `${field} must be ${expectation(spec)}.`,
+    });
+    return undefined;
+  }
+  return trimmed;
+}
+
+function validateHash(
+  field: string,
+  value: unknown,
+  spec: ArgumentSpec,
+  issues: ValidationIssue[],
+): string | undefined {
+  try {
+    const parsed = parseMetadataHash(value, field);
+    return spec.bareHex ? parsed.hex : parsed.canonical;
+  } catch (err) {
+    issues.push({
+      field,
+      code: "invalid_hash",
+      message:
+        err instanceof MetadataHashError ? err.message : `${field} is not a valid digest value.`,
+    });
+    return undefined;
+  }
+}
+
+/** Validated, normalized arguments for a tool call. */
+export type ValidatedArgs = Record<string, string | boolean>;
+
+/**
+ * Validate and normalize a tool call's arguments.
+ *
+ * @throws {UnknownToolError}    when the tool is not part of the surface
+ * @throws {ToolValidationError} when any argument fails its spec
+ */
+export function validateToolArgs(tool: string, rawArgs: unknown): ValidatedArgs {
+  const spec = TOOL_ARGUMENT_SPECS[tool];
+  if (!spec) throw new UnknownToolError(tool);
+
+  const issues: ValidationIssue[] = [];
+  const args = rawArgs ?? {};
+
+  if (typeof args !== "object" || Array.isArray(args)) {
+    throw new ToolValidationError(tool, [
+      {
+        field: "arguments",
+        code: "not_an_object",
+        message: `arguments must be a JSON object; received ${typeName(rawArgs)}.`,
+      },
+    ]);
+  }
+
+  const provided = args as Record<string, unknown>;
+  const known = new Set(Object.keys(spec));
+  const out: ValidatedArgs = {};
+
+  // Unknown arguments first: a typo is more useful reported than ignored.
+  for (const field of Object.keys(provided)) {
+    if (!known.has(field)) {
+      const accepted = Object.keys(spec);
+      issues.push({
+        field,
+        code: "unknown_argument",
+        message:
+          `${field} is not a recognized argument for ${tool}. ` +
+          (accepted.length > 0
+            ? `Accepted arguments: ${accepted.join(", ")}.`
+            : "This tool takes no arguments."),
+      });
+    }
+  }
+
+  for (const [field, fieldSpec] of Object.entries(spec)) {
+    const value = provided[field];
+
+    if (value === undefined || value === null) {
+      if (fieldSpec.required) {
+        issues.push({
+          field,
+          code: "missing_required",
+          message: `${field} is required. Expected ${expectation(fieldSpec)}.`,
+        });
+      }
+      continue;
+    }
+
+    switch (fieldSpec.kind) {
+      case "flag": {
+        const flag = validateFlag(field, value, issues);
+        if (flag !== undefined) out[field] = flag;
+        break;
+      }
+      case "enum": {
+        const literal = validateEnum(field, value, fieldSpec, issues);
+        if (literal !== undefined) out[field] = literal;
+        break;
+      }
+      case "hash": {
+        const hash = validateHash(field, value, fieldSpec, issues);
+        if (hash !== undefined) out[field] = hash;
+        break;
+      }
+      case "string": {
+        const text = validateString(field, value, fieldSpec, issues);
+        if (text !== undefined) out[field] = text;
+        break;
+      }
+    }
+  }
+
+  if (issues.length > 0) throw new ToolValidationError(tool, issues);
+  return out;
+}
+
+/** Read a validated string argument. Required fields are guaranteed present. */
+export function requiredString(args: ValidatedArgs, field: string): string {
+  const value = args[field];
+  if (typeof value !== "string") {
+    throw new Error(`Internal validation error: ${field} was not validated as a string.`);
+  }
+  return value;
+}
+
+/** Read an optional validated string argument. */
+export function optionalString(args: ValidatedArgs, field: string): string | undefined {
+  const value = args[field];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** Read a validated flag, defaulting to false when the caller omitted it. */
+export function flag(args: ValidatedArgs, field: string): boolean {
+  return args[field] === true;
+}
+
+/** Tool names advertised by this server, sorted. */
+export function knownToolNames(): string[] {
+  return TOOL_DEFINITIONS.map((tool) => tool.name).sort();
+}

@@ -99,6 +99,8 @@ All env vars are optional — the defaults point to the hosted testnet backend:
 | `SOROBAN_RPC_URL`            | `https://soroban-testnet.stellar.org`                  | Soroban RPC endpoint (for tx status and payments)  |
 | `MINDVAULT_METRICS`          | _(unset)_                                              | Opt-in tool-level metrics; set to `1` to enable    |
 
+Every tool validates its arguments against an explicit schema before doing any work: unknown or malformed arguments are rejected with a deterministic error instead of reaching the API as a failed request. See **[docs/mcp-tool-arguments.md](docs/mcp-tool-arguments.md)** for the per-tool contract and error shape.
+
 An agent can set up a wallet, register as a publisher, publish a resource (paying for verification), and then another agent can discover and buy that resource. The full agent-to-agent economy runs through x402.
 
 Operators who want lightweight visibility into tool usage can enable opt-in metrics (`MINDVAULT_METRICS=1`) and read them with the `mindvault_metrics` tool. See **[docs/mcp-metrics.md](docs/mcp-metrics.md)**.

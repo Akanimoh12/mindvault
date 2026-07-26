@@ -48,6 +48,9 @@ import {
 } from "./mainnetGuardrails.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage } from "./redaction.js";
+import { describeMetadataPointerHash, parseMetadataHash } from "./metadataHash.js";
+import { TOOL_DEFINITIONS } from "./tools.js";
+import { flag, optionalString, requiredString, validateToolArgs } from "./validation.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -409,37 +412,17 @@ function formatResource(r: any): string {
   return `[${r.id}] ${r.title} — $${r.price} USDC\n  ${r.description ?? ""}\n  ${r.accessUrl}`;
 }
 
+/**
+ * Search arguments, already validated by the tool layer (see validation.ts).
+ * `search()` still guards an empty query so direct callers keep the old
+ * friendly message.
+ */
 interface SearchFilters {
   query: string;
   minPrice?: string;
   maxPrice?: string;
   verificationStatus?: "pending" | "verified" | "rejected" | "skipped";
   resourceType?: "file" | "link";
-}
-
-function normalizeSearchFilters(args: any): SearchFilters | null {
-  const query = typeof args?.query === "string" ? args.query.trim() : "";
-  if (!query) return null;
-
-  const minPrice = typeof args?.minPrice === "string" ? args.minPrice.trim() : "";
-  const maxPrice = typeof args?.maxPrice === "string" ? args.maxPrice.trim() : "";
-  const verificationStatus =
-    args?.verificationStatus === "pending" ||
-    args?.verificationStatus === "verified" ||
-    args?.verificationStatus === "rejected" ||
-    args?.verificationStatus === "skipped"
-      ? args.verificationStatus
-      : undefined;
-  const resourceType =
-    args?.resourceType === "file" || args?.resourceType === "link" ? args.resourceType : undefined;
-
-  return {
-    query,
-    minPrice: minPrice || undefined,
-    maxPrice: maxPrice || undefined,
-    verificationStatus,
-    resourceType,
-  };
 }
 
 function describeFilters(filters: SearchFilters): string {
@@ -1067,9 +1050,22 @@ function registryInfo(): string {
 /**
  * Compare a resource from the API catalog with the same resource in the vault-registry contract.
  * Reports matching fields, mismatches, missing API records, and missing on-chain records.
+ *
+ * When `expectedMetadataHash` is supplied, the digest the caller computed over
+ * the off-chain content is compared against the `contentHash` anchored in the
+ * on-chain metadata pointer. Both sides are canonicalized first (see
+ * metadataHash.ts), so `sha256:AB…` and `ab…` compare equal.
  */
-async function checkConsistency(resourceId: string): Promise<string> {
+export async function checkConsistency(
+  resourceId: string,
+  expectedMetadataHash?: string,
+): Promise<string> {
   if (!resourceId) throw new Error("resourceId is required.");
+  // Reject a malformed expectation up front: comparing against a digest that
+  // is not in the fixed format can only produce a misleading "mismatch".
+  const expected = expectedMetadataHash
+    ? parseMetadataHash(expectedMetadataHash, "expectedMetadataHash").canonical
+    : null;
 
   // Fetch from API
   const apiRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
@@ -1181,12 +1177,33 @@ async function checkConsistency(resourceId: string): Promise<string> {
   // ID should always match
   report.matches.id = { api: apiData.id, onchain: onchainData.id };
 
+  // Describe the content digest anchored on-chain, and compare it with the
+  // caller's expectation when one was supplied. A malformed or absent anchor
+  // is reported rather than thrown: the rest of the comparison is still useful.
+  const anchor = describeMetadataPointerHash(onchainData.metadata);
+  const metadataHash: Record<string, unknown> = {
+    onchain: anchor.canonical,
+    algorithm: anchor.algorithm,
+    present: anchor.present,
+    valid: anchor.valid,
+    reason: anchor.reason,
+  };
+  if (expected) {
+    metadataHash.expected = expected;
+    metadataHash.matches = anchor.valid && anchor.canonical === expected;
+    if (!metadataHash.matches) {
+      report.mismatches.metadataHash = { api: expected, onchain: anchor.canonical };
+    } else {
+      report.matches.metadataHash = { api: expected, onchain: anchor.canonical };
+    }
+  }
+
   const summary =
     Object.keys(report.mismatches).length === 0
       ? "All compared fields match between API and on-chain registry."
       : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
 
-  return JSON.stringify({ ...report, summary }, null, 2);
+  return JSON.stringify({ ...report, metadataHash, summary }, null, 2);
 }
 
 /**
@@ -1290,391 +1307,61 @@ function toolMetrics(reset: boolean): string {
 
 const server = new Server({ name: "mindvault", version: "1.0.0" }, { capabilities: { tools: {} } });
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "mindvault_setup_wallet",
-      description:
-        "Create a Stellar wallet using the sponsored account protocol. Optionally pass a profile name to create the wallet under a named profile (e.g. testnet, mainnet, publisher, buyer) and make it active; defaults to the active profile. The wallet (public key + secret key) is persisted to ~/.mindvault/state.json (mode 0600) and reloaded automatically on restart.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          profile: {
-            type: "string",
-            description:
-              "Optional profile name to create/switch to. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'testnet', 'mainnet-publisher', 'buyer.alice'",
-            examples: ["testnet", "mainnet-publisher", "buyer.alice"],
-          },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: [],
-      },
-    },
-    {
-      name: "mindvault_wallet_info",
-      description:
-        "Check the active profile name, its agent wallet address, USDC balance, and whether it is registered as a publisher.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_use_profile",
-      description:
-        "Switch the active wallet profile, creating it if it does not exist. Profiles let one agent keep separate identities (e.g. testnet vs mainnet, publisher vs buyer); each has its own wallet and publisher API key. Subsequent tools operate on the active profile.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: {
-            type: "string",
-            description:
-              "Profile name to make active. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'mainnet', 'testnet-buyer', 'publisher.bob'",
-            examples: ["mainnet", "testnet-buyer", "publisher.bob"],
-          },
-        },
-        required: ["name"],
-      },
-    },
-    {
-      name: "mindvault_list_profiles",
-      description:
-        "List all named wallet profiles, marking the active one and showing each profile's wallet address and whether it is registered as a publisher. Secret keys are never shown.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_browse",
-      description: "List all available resources in the MindVault catalog.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_search",
-      description:
-        "Search the MindVault catalog by keyword and optional filters for price, resource type, and verification status. Uses server-side filtering and returns compact resource summaries.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
-            examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
-          },
-          minPrice: {
-            type: "string",
-            description:
-              "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
-            examples: ["5.00", "10.50", "0.50"],
-          },
-          maxPrice: {
-            type: "string",
-            description:
-              "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
-            examples: ["20.00", "15.99", "100.00"],
-          },
-          verificationStatus: {
-            type: "string",
-            enum: ["pending", "verified", "rejected", "skipped"],
-            description:
-              "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
-            examples: ["verified"],
-          },
-          resourceType: {
-            type: "string",
-            enum: ["file", "link"],
-            description:
-              "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
-            examples: ["link", "file"],
-          },
-        },
-        required: ["query"],
-      },
-    },
-    {
-      name: "mindvault_preview",
-      description:
-        "Get details and price for a specific resource before purchasing. Returns title, description, price, type, verification status, and access URL.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          resourceId: {
-            type: "string",
-            description:
-              "The unique resource identifier from mindvault_browse or mindvault_search. Example: 'cm7x8y9z'",
-            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
-          },
-        },
-        required: ["resourceId"],
-      },
-    },
-    {
-      name: "mindvault_register",
-      description:
-        "Register as a publisher using the agent wallet. The API key is persisted to ~/.mindvault/state.json (mode 0600, key not shown in output) and reloaded on restart so mindvault_publish works across sessions.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          email: { type: "string" },
-          walletAddress: { type: "string" },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: ["name", "email"],
-      },
-    },
-    {
-      name: "mindvault_publish",
-      description:
-        "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          description: { type: "string" },
-          price: { type: "string" },
-          externalUrl: { type: "string" },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: ["title", "price", "externalUrl"],
-      },
-    },
-    {
-      name: "mindvault_buy",
-      description:
-        "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          resourceId: { type: "string" },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: ["resourceId"],
-      },
-    },
-    {
-      name: "mindvault_register_onchain",
-      description:
-        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet (which must be the resource creator), submits it, and returns the registry status and on-chain tx hash.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          resourceId: {
-            type: "string",
-            description:
-              "The resource ID to register on-chain (from mindvault_publish output). Must be verified and not already registered. Example: 'cm7x8y9z'",
-            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
-          },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: ["resourceId"],
-      },
-    },
-    {
-      name: "mindvault_agent_status",
-      description:
-        "Check the verification agent's earnings and activity. Returns total verifications, pass/fail counts, total USDC earned, average confidence score, and recent verification history with resource titles.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_registry_info",
-      description:
-        "Return the on-chain vault-registry contract ID, network passphrase, RPC URL, and the resource fields available for direct Soroban queries. Use this to verify ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_network_profile",
-      description:
-        "Report current Stellar/x402 network configuration (testnet/mainnet), RPC URLs, registry contract ID, and warnings for custom overrides. Use this to verify which network the MCP is connected to and diagnose configuration issues.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_check_bindings",
-      description:
-        "Verify the installed registry-client bindings match the deployed vault-registry contract interface. Reports a match, or a warning listing the drifting methods with the contract ID, network, client version, and a recommended fix (redeploy the contract or regenerate bindings). Useful after a contract redeploy or client upgrade.",
-      inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-      name: "mindvault_check_consistency",
-      description:
-        "Compare a resource from the API catalog with the same resource in the vault-registry contract. Reports matching fields, mismatches, missing API records, and missing on-chain records. Useful for detecting synchronization issues between the API and on-chain registry.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          resourceId: {
-            type: "string",
-            description: "The resource ID to compare between API and on-chain registry.",
-          },
-        },
-        required: ["resourceId"],
-      },
-    },
-    {
-      name: "mindvault_registry_lookup",
-      description:
-        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator wallet address, price (USDC), metadata (title/description), listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          resourceId: {
-            type: "string",
-            description:
-              "The resource ID to look up on-chain. Must be a registered resource. Example: 'cm7x8y9z'",
-            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
-          },
-        },
-        required: ["resourceId"],
-      },
-    },
-    {
-      name: "mindvault_tx_status",
-      description:
-        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          txHash: {
-            type: "string",
-            description:
-              "The 64-character hex transaction hash from Stellar. Example: 'abc123def456...' (from mindvault_register_onchain or mindvault_publish output).",
-            examples: [
-              "abc123def456789012345678901234567890123456789012345678901234",
-              "f47ac10b58cc4372a5670e02b2c3d479c3e5d0a1b2c3d4e5f6a7b8c9d0e1f2a3",
-            ],
-          },
-        },
-        required: ["txHash"],
-      },
-    },
-    {
-      name: "mindvault_reset",
-      description:
-        "Clear credentials from memory and disk (~/.mindvault/state.json). By default only the active profile is cleared; pass all=true to remove every profile and delete the state file. After reset, run mindvault_setup_wallet and mindvault_register again.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          all: {
-            type: "boolean",
-            description:
-              "Clear every profile and delete the state file (default: false clears active profile only). Example: true removes all profiles.",
-            examples: [true, false],
-          },
-          confirmMainnet: {
-            type: "boolean",
-            description:
-              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
-          },
-        },
-        required: [],
-      },
-    },
-    {
-      name: "mindvault_backup_state",
-      description:
-        "Export an encrypted backup of ~/.mindvault/state.json for moving agent environments. Requires a passphrase (min 8 chars). Output is a self-contained ciphertext blob — wallet secret keys and API keys never appear in plaintext. Restore with mindvault_restore_state using the same passphrase. Does not change reset behavior.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          passphrase: {
-            type: "string",
-            description:
-              "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
-          },
-        },
-        required: ["passphrase"],
-      },
-    },
-    {
-      name: "mindvault_restore_state",
-      description:
-        "Restore ~/.mindvault/state.json from an encrypted backup produced by mindvault_backup_state. Validates integrity (wrong passphrase or tampered data fails before any write). Replaces in-memory profiles and re-persists to disk (mode 0600). Existing reset behavior is unchanged.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          blob: {
-            type: "string",
-            description: "Encrypted backup blob from mindvault_backup_state (v1:… format).",
-          },
-          passphrase: {
-            type: "string",
-            description: "Passphrase used when the backup was created (min 8 characters).",
-          },
-        },
-        required: ["blob", "passphrase"],
-      },
-    },
-    {
-      name: "mindvault_metrics",
-      description:
-        "Return opt-in tool-level metrics: per-tool call/error counts and durations, plus payment attempt/failure totals. Enable by setting MINDVAULT_METRICS=1 on the server. Output contains only tool names, counts, and durations — never arguments, wallets, or API keys. Pass reset=true to clear counters after reading.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          reset: {
-            type: "boolean",
-            description:
-              "Clear all counters after returning the current snapshot (default: false leaves counters intact). Example: true resets metrics after reading.",
-            examples: [true, false],
-          },
-        },
-        required: [],
-      },
-    },
-  ],
-}));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
 
-async function dispatchTool(name: string, args: any): Promise<string> {
-  assertMainnetMutationAllowed(STELLAR_NETWORK, name, args ?? {});
+/**
+ * Validate a call's arguments against the tool's spec, then run the handler.
+ *
+ * Arguments reaching a handler are already checked, trimmed, and normalized —
+ * handlers never re-parse an untyped bag. Unknown tools, unknown arguments,
+ * and malformed values all fail here with a deterministic message before any
+ * network call, payment, or state write happens.
+ */
+export async function dispatchTool(name: string, rawArgs: unknown): Promise<string> {
+  const args = validateToolArgs(name, rawArgs);
+  assertMainnetMutationAllowed(STELLAR_NETWORK, name, args);
+
   switch (name) {
     case "mindvault_setup_wallet":
-      return setupWallet(args.profile as string | undefined);
+      return setupWallet(optionalString(args, "profile"));
     case "mindvault_wallet_info":
       return walletInfo();
     case "mindvault_use_profile":
-      return useProfile(args.name as string);
+      return useProfile(requiredString(args, "name"));
     case "mindvault_list_profiles":
       return listProfiles();
     case "mindvault_browse":
       return browse();
-    case "mindvault_search": {
-      const filters = normalizeSearchFilters(args);
-      return filters ? search(filters) : "Provide a non-empty search query.";
-    }
+    case "mindvault_search":
+      return search({
+        query: requiredString(args, "query"),
+        minPrice: optionalString(args, "minPrice"),
+        maxPrice: optionalString(args, "maxPrice"),
+        verificationStatus: optionalString(
+          args,
+          "verificationStatus",
+        ) as SearchFilters["verificationStatus"],
+        resourceType: optionalString(args, "resourceType") as SearchFilters["resourceType"],
+      });
     case "mindvault_preview":
-      return preview(args.resourceId as string);
+      return preview(requiredString(args, "resourceId"));
     case "mindvault_register":
       return register(
-        args.name as string,
-        args.email as string,
-        args.walletAddress as string | undefined,
+        requiredString(args, "name"),
+        requiredString(args, "email"),
+        optionalString(args, "walletAddress"),
       );
     case "mindvault_publish":
       return publish({
-        title: args.title as string,
-        description: args.description as string | undefined,
-        price: args.price as string,
-        externalUrl: args.externalUrl as string,
+        title: requiredString(args, "title"),
+        description: optionalString(args, "description"),
+        price: requiredString(args, "price"),
+        externalUrl: requiredString(args, "externalUrl"),
       });
     case "mindvault_buy":
-      return buy(args.resourceId as string);
+      return buy(requiredString(args, "resourceId"));
     case "mindvault_register_onchain":
-      return registerOnchain(args.resourceId as string);
+      return registerOnchain(requiredString(args, "resourceId"));
     case "mindvault_agent_status":
       return agentStatus();
     case "mindvault_registry_info":
@@ -1684,20 +1371,25 @@ async function dispatchTool(name: string, args: any): Promise<string> {
     case "mindvault_check_bindings":
       return checkBindings();
     case "mindvault_check_consistency":
-      return checkConsistency(args.resourceId as string);
+      return checkConsistency(
+        requiredString(args, "resourceId"),
+        optionalString(args, "expectedMetadataHash"),
+      );
     case "mindvault_registry_lookup":
-      return registryLookup(args.resourceId as string);
+      return registryLookup(requiredString(args, "resourceId"));
     case "mindvault_tx_status":
-      return txStatus(args.txHash as string);
+      return txStatus(requiredString(args, "txHash"));
     case "mindvault_reset":
-      return resetState(args.all === true);
+      return resetState(flag(args, "all"));
     case "mindvault_backup_state":
-      return backupState(args.passphrase as string);
+      return backupState(requiredString(args, "passphrase"));
     case "mindvault_restore_state":
-      return restoreStateTool(args.blob as string, args.passphrase as string);
+      return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
     case "mindvault_metrics":
-      return toolMetrics(args.reset === true);
+      return toolMetrics(flag(args, "reset"));
     default:
+      // Unreachable: validateToolArgs rejects unknown tools first. Kept so a
+      // tool added to the spec table without a handler fails loudly.
       throw new Error(`Unknown tool: ${name}`);
   }
 }

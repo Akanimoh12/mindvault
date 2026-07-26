@@ -46,6 +46,7 @@ vi.mock("@mindvault/registry-client", async (importOriginal) => {
 
 import {
   browse,
+  dispatchTool,
   search,
   preview,
   txStatus,
@@ -1012,5 +1013,55 @@ describe("networkProfile", () => {
 
     expect(parsed.x402Network).toBeTruthy();
     expect(typeof parsed.x402Network).toBe("string");
+  });
+});
+
+// ── Tool dispatch argument validation ───────────────────────────────────────
+
+describe("dispatchTool argument validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects an unknown tool without touching the network", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    await expect(dispatchTool("mindvault_nope", {})).rejects.toThrow(
+      "Unknown tool: mindvault_nope",
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid arguments before any request is made", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      dispatchTool("mindvault_preview", { resourceId: "../etc/passwd" }),
+    ).rejects.toThrow("Invalid arguments for mindvault_preview");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown argument name instead of ignoring it", async () => {
+    await expect(
+      dispatchTool("mindvault_search", { query: "stellar", resourceTyp: "link" }),
+    ).rejects.toThrow("resourceTyp is not a recognized argument");
+  });
+
+  it("reports a missing required argument by name", async () => {
+    await expect(dispatchTool("mindvault_buy", {})).rejects.toThrow("resourceId is required");
+  });
+
+  it("passes normalized arguments through to the handler", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse(singleResourceMeta));
+    await dispatchTool("mindvault_preview", { resourceId: "  res-001  " });
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("/resources/res-001/meta"),
+      expect.anything(),
+    );
+  });
+
+  it("produces the same error message for the same invalid call", async () => {
+    const first = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
+    const second = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
+    expect(first.message).toBe(second.message);
+    expect(first.message).toContain("hexadecimal");
   });
 });
