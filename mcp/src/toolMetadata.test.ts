@@ -112,8 +112,7 @@ describe("MCP tool metadata", () => {
         },
         price: {
           type: "string",
-          description:
-            "Price in USDC (decimal string). Example: '5.00' charges 5 USDC per access.",
+          description: "Price in USDC (decimal string). Example: '5.00' charges 5 USDC per access.",
           examples: ["5.00", "10.50", "0.99", "25.00"],
         },
         externalUrl: {

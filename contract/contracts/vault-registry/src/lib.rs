@@ -76,6 +76,8 @@ pub struct RegistryInfo {
     /// (`env.ledger().network_id()`), so clients can confirm they are
     /// talking to the network they expect without a hardcoded config value.
     pub network_id: BytesN<32>,
+}
+
 /// On-chain mirror of the server's off-chain verification result. Settable
 /// only by an address holding the verifier role (see `add_verifier`).
 #[contracttype]
@@ -642,10 +644,6 @@ impl VaultRegistry {
             resource_schema_version: RESOURCE_SCHEMA_VERSION,
             network_id: env.ledger().network_id(),
         }
-    /// Number of resources currently owned by `creator`. Reflects ownership
-    /// transfers (unlike `count`, which is monotonic).
-    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
-        Self::creator_count(&env, &creator)
     }
 
     /// Current contract admin.
@@ -814,9 +812,6 @@ impl VaultRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::NotFound)
-    }
-
-        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 

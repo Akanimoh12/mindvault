@@ -63,7 +63,10 @@ export interface IntegrationHarness {
  */
 export async function startIntegrationHarness(server: Server): Promise<IntegrationHarness> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "mindvault-integration", version: "1.0.0" }, { capabilities: {} });
+  const client = new Client(
+    { name: "mindvault-integration", version: "1.0.0" },
+    { capabilities: {} },
+  );
 
   await server.connect(serverTransport);
   await client.connect(clientTransport);

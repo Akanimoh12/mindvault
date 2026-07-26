@@ -952,7 +952,6 @@ describe("wallet_info balance details", () => {
   });
 });
 
-
 // ── networkProfile (#412) ───────────────────────────────────────────────────
 
 describe("networkProfile", () => {

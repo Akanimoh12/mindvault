@@ -30,7 +30,13 @@ const GATED_SET: ReadonlySet<string> = new Set(MAINNET_GATED_TOOLS);
 export function isMainnetNetwork(network: string | undefined): boolean {
   if (!network) return false;
   const n = network.trim().toLowerCase();
-  return n === "mainnet" || n === "pubnet" || n === "public" || n === "stellar:pubnet" || n === "stellar:mainnet";
+  return (
+    n === "mainnet" ||
+    n === "pubnet" ||
+    n === "public" ||
+    n === "stellar:pubnet" ||
+    n === "stellar:mainnet"
+  );
 }
 
 /** Parse truthy confirmation from a tool arg. */

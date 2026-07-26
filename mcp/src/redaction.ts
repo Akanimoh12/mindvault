@@ -32,14 +32,14 @@ const SECRET_PATTERNS = [
  * @returns The redacted string with secrets replaced by [REDACTED]
  */
 export function redactSecrets(input: string): string {
-  if (!input || typeof input !== 'string') {
+  if (!input || typeof input !== "string") {
     return input;
   }
 
   let redacted = input;
 
   for (const pattern of SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, '[REDACTED]');
+    redacted = redacted.replace(pattern, "[REDACTED]");
   }
 
   return redacted;
@@ -56,20 +56,20 @@ export function redactObject<T>(obj: T): T {
     return obj;
   }
 
-  if (typeof obj === 'string') {
+  if (typeof obj === "string") {
     return redactSecrets(obj) as T;
   }
 
   if (Array.isArray(obj)) {
-    return obj.map(item => redactObject(item)) as T;
+    return obj.map((item) => redactObject(item)) as T;
   }
 
-  if (typeof obj === 'object') {
+  if (typeof obj === "object") {
     const result: any = {};
     for (const [key, value] of Object.entries(obj as any)) {
       // Redact known secret field names
       if (isSecretFieldName(key)) {
-        result[key] = '[REDACTED]';
+        result[key] = "[REDACTED]";
       } else {
         result[key] = redactObject(value);
       }
@@ -85,28 +85,28 @@ export function redactObject<T>(obj: T): T {
  */
 function isSecretFieldName(fieldName: string): boolean {
   const secretFields = [
-    'secret',
-    'secretKey',
-    'secret_key',
-    'privateKey',
-    'private_key',
-    'apiKey',
-    'api_key',
-    'apikey',
-    'accessToken',
-    'access_token',
-    'authToken',
-    'auth_token',
-    'password',
-    'token',
-    'bearer',
-    'authorization',
-    'x-api-key',
-    'xApiKey',
+    "secret",
+    "secretKey",
+    "secret_key",
+    "privateKey",
+    "private_key",
+    "apiKey",
+    "api_key",
+    "apikey",
+    "accessToken",
+    "access_token",
+    "authToken",
+    "auth_token",
+    "password",
+    "token",
+    "bearer",
+    "authorization",
+    "x-api-key",
+    "xApiKey",
   ];
 
   const lowerName = fieldName.toLowerCase();
-  return secretFields.some(field => lowerName.includes(field.toLowerCase()));
+  return secretFields.some((field) => lowerName.includes(field.toLowerCase()));
 }
 
 /**
@@ -119,7 +119,7 @@ export function safeErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return redactSecrets(error.message);
   }
-  if (typeof error === 'string') {
+  if (typeof error === "string") {
     return redactSecrets(error);
   }
   try {

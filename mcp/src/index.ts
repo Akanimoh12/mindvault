@@ -30,7 +30,11 @@ import {
   formatDiagnostics,
   hasBlockingDiagnostics,
 } from "./diagnostics.js";
-import { assertMainnetMutationAllowed, formatMainnetDiagnostics, mainnetAllowedFromEnv } from "./mainnetGuardrails.js";
+import {
+  assertMainnetMutationAllowed,
+  formatMainnetDiagnostics,
+  mainnetAllowedFromEnv,
+} from "./mainnetGuardrails.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -833,13 +837,15 @@ export async function buy(resourceId: string): Promise<string> {
     if (shortMsg) return shortMsg;
   }
 
-  const beforeState = meta.ok ? {
-    id: meta.data.id,
-    title: meta.data.title,
-    price: meta.data.price,
-    accessUrl: meta.data.accessUrl,
-    purchased: false,
-  } : null;
+  const beforeState = meta.ok
+    ? {
+        id: meta.data.id,
+        title: meta.data.title,
+        price: meta.data.price,
+        accessUrl: meta.data.accessUrl,
+        purchased: false,
+      }
+    : null;
 
   const paidFetch = makePaidFetch(wallet);
   const res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
@@ -1188,9 +1194,10 @@ async function checkConsistency(resourceId: string): Promise<string> {
   // ID should always match
   report.matches.id = { api: apiData.id, onchain: onchainData.id };
 
-  const summary = Object.keys(report.mismatches).length === 0
-    ? "All compared fields match between API and on-chain registry."
-    : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
+  const summary =
+    Object.keys(report.mismatches).length === 0
+      ? "All compared fields match between API and on-chain registry."
+      : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
 
   return JSON.stringify({ ...report, summary }, null, 2);
 }
@@ -1206,14 +1213,23 @@ export function networkProfile(): string {
 
   // Detect custom overrides that differ from the preset
   const usdcContractId = process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId;
-  if (process.env.USDC_CONTRACT_ID && process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId) {
-    warnings.push(`USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`);
+  if (
+    process.env.USDC_CONTRACT_ID &&
+    process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId
+  ) {
+    warnings.push(
+      `USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`,
+    );
   }
   if (process.env.SOROBAN_RPC_URL && process.env.SOROBAN_RPC_URL !== networkPreset.sorobanRpcUrl) {
-    warnings.push(`SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`);
+    warnings.push(
+      `SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`,
+    );
   }
   if (process.env.HORIZON_URL && process.env.HORIZON_URL !== networkPreset.horizonUrl) {
-    warnings.push(`HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`);
+    warnings.push(
+      `HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`,
+    );
   }
   if (
     process.env.VAULT_REGISTRY_CONTRACT_ID &&
@@ -1225,7 +1241,9 @@ export function networkProfile(): string {
     );
   }
   if (process.env.NETWORK && process.env.NETWORK !== networkPreset.x402Network) {
-    warnings.push(`NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`);
+    warnings.push(
+      `NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`,
+    );
   }
 
   const profile = {
@@ -1418,7 +1436,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
-
         },
         required: ["name", "email"],
       },
@@ -1439,14 +1456,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
-
         },
         required: ["title", "price", "externalUrl"],
       },
     },
     {
       name: "mindvault_buy",
-      description: "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
+      description:
+        "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
       inputSchema: {
         type: "object",
         properties: {
@@ -1589,7 +1606,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           passphrase: {
             type: "string",
-            description: "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
+            description:
+              "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
           },
         },
         required: ["passphrase"],
