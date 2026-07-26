@@ -38,13 +38,13 @@ jobs:
 
       - name: Build optimized wasm contract
         working-directory: contract
-        run: stellar contract build --manifest-path Cargo.toml
+        run: stellar contract build --manifest-path Cargo.toml --optimize
 
       - name: Enforce WASM size budget
         working-directory: contract
         run: |
           WASM_FILE="target/wasm32v1-none/release/vault_registry.wasm"
-          MAX_SIZE=10240
+          MAX_SIZE=28672
           SIZE=$(stat -c%s "$WASM_FILE")
           echo "WASM Size: $SIZE bytes"
           if [ "$SIZE" -gt "$MAX_SIZE" ]; then

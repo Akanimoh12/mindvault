@@ -30,6 +30,16 @@ const MAX_TAGS: u32 = 8;
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
 
+/// On-chain mirror of the server's off-chain verification result. Settable
+/// only by an address holding the verifier role (see `add_verifier`).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VerificationStatus {
+    Pending,
+    Verified,
+    Rejected,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resource {
@@ -41,6 +51,10 @@ pub struct Resource {
     /// Discovery labels (e.g. "dataset", "research"). Distinct from `metadata`,
     /// which remains the off-chain content anchor (IPFS URI, content hash, etc.).
     pub tags: Vec<String>,
+    /// On-chain verification status, settable only by a verifier.
+    pub verified: VerificationStatus,
+    /// Once true, `update_metadata` permanently rejects further changes.
+    pub frozen: bool,
 }
 
 /// One page of the on-chain catalog plus a cursor for the next page.
@@ -63,10 +77,10 @@ pub enum DataKey {
     Admin,
     PendingAdmin,
     CreatorTerms(Address),
-    Admin,
     CreatorResources(Address),
     CreatorCount(Address),
     PendingTransfer(String),
+    Verifier(Address),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -107,14 +121,20 @@ pub enum Error {
     PendingAdminNotSet = 7,
     PendingAdminAlreadySet = 8,
     SameAdmin = 9,
-    TermsHashTooLong = 6,
-    AlreadyInitialized = 7,
-    InvalidResourceId = 8,
-    InvalidMetadataPointer = 9,
-    AlreadyOwner = 10,
-    NoPendingTransfer = 11,
-    ReservedId = 12,
-    PriceExceedsMax = 13,
+    TermsHashTooLong = 10,
+    InvalidResourceId = 11,
+    InvalidMetadataPointer = 12,
+    EmptyMetadata = 13,
+    AlreadyOwner = 14,
+    NoPendingTransfer = 15,
+    ReservedId = 16,
+    PriceExceedsMax = 17,
+    AdminNotSet = 18,
+    NotVerifier = 19,
+    InvalidVerificationTransition = 20,
+    AlreadyFrozen = 21,
+    MetadataFrozen = 22,
+    DuplicateInRepair = 23,
 }
 
 #[contract]
@@ -153,6 +173,8 @@ impl VaultRegistry {
             metadata,
             listed: true,
             tags,
+            verified: VerificationStatus::Pending,
+            frozen: false,
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
@@ -181,7 +203,6 @@ impl VaultRegistry {
 
     /// Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
     /// Only the creator may call this.
-    /// Update a resource's price. Only the creator may call this.
     ///
     /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
     /// containing `id`, `old_price`, `new_price`, and `updater`.
@@ -216,6 +237,9 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        if resource.frozen {
+            return Err(Error::MetadataFrozen);
+        }
         Self::validate_metadata_pointer(&metadata)?;
         let old_metadata = resource.metadata.clone();
         resource.metadata = metadata.clone();
@@ -231,6 +255,60 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Permanently freeze a resource's metadata pointer. Only the creator may
+    /// call this. Irreversible — errors `AlreadyFrozen` if called twice.
+    /// Price, listing, tags, and ownership remain mutable after freezing.
+    pub fn freeze_metadata(env: Env, id: String) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        if resource.frozen {
+            return Err(Error::AlreadyFrozen);
+        }
+        resource.frozen = true;
+        Self::save(&env, &resource);
+        env.events().publish((symbol_short!("freeze"), id), ());
+        Ok(())
+    }
+
+    /// Update a resource's on-chain verification status. Only an address
+    /// currently holding the verifier role (see `add_verifier`) may call
+    /// this. Only `Pending -> Verified`, `Pending -> Rejected`,
+    /// `Verified -> Rejected`, and `Rejected -> Verified` are allowed;
+    /// self-transitions and reverting to `Pending` error with
+    /// `InvalidVerificationTransition`.
+    pub fn set_verification_status(
+        env: Env,
+        id: String,
+        verifier: Address,
+        status: VerificationStatus,
+    ) -> Result<(), Error> {
+        verifier.require_auth();
+        if !Self::is_verifier(env.clone(), verifier) {
+            return Err(Error::NotVerifier);
+        }
+
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        let old_status = resource.verified;
+        let allowed = matches!(
+            (old_status, status),
+            (VerificationStatus::Pending, VerificationStatus::Verified)
+                | (VerificationStatus::Pending, VerificationStatus::Rejected)
+                | (VerificationStatus::Verified, VerificationStatus::Rejected)
+                | (VerificationStatus::Rejected, VerificationStatus::Verified)
+        );
+        if !allowed {
+            return Err(Error::InvalidVerificationTransition);
+        }
+
+        resource.verified = status;
+        Self::save(&env, &resource);
+        env.events()
+            .publish((symbol_short!("verify"), id), (old_status, status));
+        Ok(())
+    }
+
     /// Replace a resource's discovery tags. Only the creator may call this.
     /// Does not modify `metadata` (the off-chain content pointer).
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
@@ -238,12 +316,12 @@ impl VaultRegistry {
         Self::validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
-        
+
         // Capture previous tags before replacement for event emission
         let prev_tags = resource.tags.clone();
         resource.tags = tags.clone();
         Self::save(&env, &resource);
-        
+
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
             .publish((symbol_short!("settags"), id), (prev_tags, tags));
@@ -260,14 +338,23 @@ impl VaultRegistry {
         let previous_owner = resource.creator.clone();
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
-        
+
+        Self::remove_from_creator_index(&env, &previous_owner, &id);
+        let prev_count = Self::creator_count(&env, &previous_owner);
+        Self::set_creator_count(&env, &previous_owner, prev_count.saturating_sub(1));
+        Self::append_to_creator_index(&env, &new_creator, id.clone());
+        let new_count = Self::creator_count(&env, &new_creator);
+        Self::set_creator_count(&env, &new_creator, new_count + 1);
+
         let pending_key = DataKey::PendingTransfer(id.clone());
         if env.storage().persistent().has(&pending_key) {
             env.storage().persistent().remove(&pending_key);
         }
 
-        env.events()
-            .publish((symbol_short!("transfer"), id), (previous_owner, new_creator));
+        env.events().publish(
+            (symbol_short!("transfer"), id),
+            (previous_owner, new_creator),
+        );
         Ok(())
     }
 
@@ -281,24 +368,34 @@ impl VaultRegistry {
         let key = DataKey::PendingTransfer(id.clone());
         env.storage().persistent().set(&key, &new_creator);
         Self::bump_persistent(&env, &key);
-        env.events().publish((symbol_short!("propose"), id), (resource.creator, new_creator));
+        env.events().publish(
+            (symbol_short!("propose"), id),
+            (resource.creator, new_creator),
+        );
         Ok(())
     }
 
     /// Accept a proposed transfer. Only the pending owner can call this.
     pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
         let key = DataKey::PendingTransfer(id.clone());
-        let pending_owner: Address = env.storage().persistent().get(&key).ok_or(Error::NoPendingTransfer)?;
+        let pending_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NoPendingTransfer)?;
         pending_owner.require_auth();
-        
+
         let mut resource = Self::load(&env, &id)?;
         let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
         Self::save(&env, &resource);
-        
+
         env.storage().persistent().remove(&key);
-        
-        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
+
+        env.events().publish(
+            (symbol_short!("transfer"), id),
+            (previous_owner, pending_owner),
+        );
         Ok(())
     }
 
@@ -306,13 +403,14 @@ impl VaultRegistry {
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
-        
+
         let key = DataKey::PendingTransfer(id.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::NoPendingTransfer);
         }
         env.storage().persistent().remove(&key);
-        env.events().publish((symbol_short!("cancel"), id), resource.creator);
+        env.events()
+            .publish((symbol_short!("cancel"), id), resource.creator);
         Ok(())
     }
 
@@ -425,7 +523,7 @@ impl VaultRegistry {
         }
 
         let list = Self::creator_list(&env, &creator);
-        let total = list.len() as u32;
+        let total = list.len();
         if start >= total {
             return result;
         }
@@ -453,7 +551,8 @@ impl VaultRegistry {
 
     /// Whether a resource with `id` is registered.
     pub fn exists(env: Env, id: String) -> bool {
-        Self::validate_resource_id(&id).is_ok() && env.storage().persistent().has(&DataKey::Resource(id))
+        Self::validate_resource_id(&id).is_ok()
+            && env.storage().persistent().has(&DataKey::Resource(id))
     }
 
     /// Get the owner address of a resource. Errors with `NotFound` if it does not exist.
@@ -466,6 +565,12 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Number of resources currently owned by `creator`. Reflects ownership
+    /// transfers (unlike `count`, which is monotonic).
+    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
+        Self::creator_count(&env, &creator)
     }
 
     /// Current contract admin.
@@ -491,11 +596,7 @@ impl VaultRegistry {
             return Ok(());
         }
 
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         stored_admin.require_auth();
 
         if new_admin == stored_admin {
@@ -534,6 +635,89 @@ impl VaultRegistry {
         env.events()
             .publish((symbol_short!("accadmin"),), new_admin);
         Ok(())
+    }
+
+    /// Grant the verifier role to `verifier`, authorizing `set_verification_status`.
+    /// Only the admin may call this. Errors `AdminNotSet` if no admin has
+    /// been set yet (see `nominate_new_admin`).
+    pub fn add_verifier(env: Env, verifier: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Verifier(verifier.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addverif"), verifier), true);
+        Ok(())
+    }
+
+    /// Revoke the verifier role from `verifier`. Only the admin may call this.
+    pub fn remove_verifier(env: Env, verifier: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Verifier(verifier.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmverif"), verifier), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the verifier role.
+    pub fn is_verifier(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Verifier(address))
+            .unwrap_or(false)
+    }
+
+    /// Rebuild the pagination index (`list`/`list_page`/`count`) from an
+    /// authoritative, admin-supplied ordered list of resource ids. Only the
+    /// admin may call this. Every id must already exist as a registered
+    /// `Resource` (else `NotFound`) and the list must not contain duplicates
+    /// (else `DuplicateInRepair`). Never touches `Resource` storage itself —
+    /// only rewrites the derived `Index`/`Count` pointers, so it's safe to
+    /// re-run with the current correct id list as a no-op. See
+    /// `docs/index-repair.md` for the full repair strategy.
+    pub fn repair_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let len = ids.len();
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Resource(id.clone()))
+            {
+                return Err(Error::NotFound);
+            }
+            for j in (i + 1)..len {
+                if id == ids.get(j).unwrap() {
+                    return Err(Error::DuplicateInRepair);
+                }
+            }
+        }
+
+        let old_count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            let idx_key = DataKey::Index(i);
+            env.storage().persistent().set(&idx_key, &id);
+            Self::bump_persistent(&env, &idx_key);
+        }
+        env.storage().instance().set(&DataKey::Count, &len);
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("reindex"), old_count), len);
+        Ok(())
+    }
+
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
@@ -543,39 +727,15 @@ impl VaultRegistry {
         let key = DataKey::CreatorTerms(creator.clone());
         env.storage().persistent().set(&key, &terms_hash);
         Self::bump_persistent(&env, &key);
-        env.events().publish((symbol_short!("setterms"), creator), terms_hash);
+        env.events()
+            .publish((symbol_short!("setterms"), creator), terms_hash);
         Ok(())
     }
 
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)
-    }
-
-    /// One-time initialization of the contract admin.
-    /// Reverts with `AlreadyInitialized` if called more than once.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        Self::bump_instance(&env);
-        env.events()
-            .publish((symbol_short!("init"), admin.clone()), ());
-        Ok(())
-    }
-
-    /// Return the admin address, or `NotFound` if not yet initialized.
-    pub fn admin(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotFound)
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 
@@ -594,6 +754,13 @@ impl VaultRegistry {
         let len = id.len();
         if len == 0 || len > 24 {
             return Err(Error::InvalidResourceId);
+        }
+        let mut buf = alloc::vec![0u8; len as usize];
+        id.copy_into_slice(&mut buf);
+        for &b in buf.iter() {
+            if !(b.is_ascii_lowercase() || b.is_ascii_digit()) {
+                return Err(Error::InvalidResourceId);
+            }
         }
         Ok(())
     }
@@ -625,7 +792,7 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
-        if metadata.len() == 0 {
+        if metadata.is_empty() {
             return Err(Error::EmptyMetadata);
         }
         if metadata.len() > MAX_METADATA_POINTER_LEN {
@@ -745,6 +912,15 @@ impl VaultRegistry {
             .instance()
             .set(&DataKey::CreatorCount(creator.clone()), &value);
         Self::bump_instance(env);
+    }
+
+    /// The current admin, or `AdminNotSet` if `nominate_new_admin` has never
+    /// been called.
+    fn require_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::AdminNotSet)
     }
 }
 
