@@ -69,6 +69,7 @@ Available tools:
 | `mindvault_register`         | Register as a publisher using the agent's wallet                      | `"Register me as Alice, alice@example.com"`                     |
 | `mindvault_publish`          | Publish a resource and pay for verification via x402                  | `"Publish 'My Dataset' for 5 USDC at https://example.com/data"` |
 | `mindvault_buy`              | Pay USDC and access a resource via x402                               | `"Buy resource swcn98besxpp6t1u8e77fqz3"`                       |
+| `mindvault_purchase_history` | List locally persisted purchase receipts (filter by resource/network) | `"Show my purchase history for stellar:testnet"`                |
 | `mindvault_register_onchain` | Retry on-chain registration for a published, verified resource        | `"Register resource swcn98besxpp6t1u8e77fqz3 on-chain"`         |
 | `mindvault_agent_status`     | Check the verification agent's earnings and activity                  | `"What's the agent's status?"`                                  |
 | `mindvault_registry_info`    | Return the on-chain vault-registry contract details                   | `"Show me registry info"`                                       |
