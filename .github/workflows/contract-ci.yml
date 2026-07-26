@@ -18,7 +18,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown,wasm32v1-none
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
           components: rust-src
+
+ main
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -75,7 +78,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32v1-none
 
       - name: Cache Cargo registry
         uses: actions/cache@v6

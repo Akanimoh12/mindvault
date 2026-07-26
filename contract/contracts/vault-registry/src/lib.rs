@@ -181,11 +181,19 @@ pub enum Error {
     TermsHashTooLong = 10,
     InvalidResourceId = 11,
     InvalidMetadataPointer = 12,
+fix/418-mcp-add-mcp-catalog-search-filters-parity
     AlreadyOwner = 13,
     NoPendingTransfer = 14,
     ReservedId = 15,
     PriceExceedsMax = 16,
     EmptyMetadata = 17,
+
+    EmptyMetadata = 13,
+    AlreadyOwner = 14,
+    NoPendingTransfer = 15,
+    ReservedId = 16,
+    PriceExceedsMax = 17,
+ main
     AdminNotSet = 18,
     NotVerifier = 19,
     InvalidVerificationTransition = 20,
@@ -801,7 +809,14 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
         env.storage().persistent().get(&key).ok_or(Error::NotFound)
+
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
+ main
     }
 }
 

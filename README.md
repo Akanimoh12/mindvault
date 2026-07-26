@@ -107,6 +107,8 @@ For a copy-pasteable, end-to-end agent session — wallet setup → register →
 
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
 
+For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
+
 ## Project Structure
 
 ```

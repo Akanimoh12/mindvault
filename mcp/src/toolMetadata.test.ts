@@ -14,6 +14,14 @@ import { catalogFilterInputProperties } from "./catalogFilters.js";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", () => {
+ * Full ListTools coverage through the SDK lives in `integration.test.ts`.
+ */
+import { describe, it, expect } from "vitest";
+
+describe("MCP tool metadata", () => {
+  it("all tools have required fields", () => {
+    // Inline expected tool names from index.ts for snapshot validation.
+    // Integration tests assert the live ListTools response via the SDK harness.
     const expectedToolNames = [
       "mindvault_setup_wallet",
       "mindvault_wallet_info",

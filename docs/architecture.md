@@ -86,14 +86,14 @@ When a buyer (human or AI agent) requests a paywalled resource:
 
 The vault-registry is a Soroban smart contract deployed on Stellar. It is the **single, permissionless source of truth** for:
 
-| Property | Meaning |
-|----------|---------|
-| `creator` | Stellar address that owns the resource; the only key allowed to mutate it |
-| `price` | Current access price in USDC stroops (1 USDC = 10 000 000 stroops) |
-| `metadata` | Content pointer — typically an IPFS URI or SHA-256 content hash |
-| `listed` | Whether the resource is publicly discoverable |
+| Property   | Meaning                                                                                   |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `creator`  | Stellar address that owns the resource; the only key allowed to mutate it                 |
+| `price`    | Current access price in USDC stroops (1 USDC = 10 000 000 stroops)                        |
+| `metadata` | Content pointer — typically an IPFS URI or SHA-256 content hash                           |
+| `listed`   | Whether the resource is publicly discoverable                                             |
 | `verified` | On-chain mirror of the server's verification result: `Pending`, `Verified`, or `Rejected` |
-| `frozen` | Once `true`, `metadata` can never be changed again |
+| `frozen`   | Once `true`, `metadata` can never be changed again                                        |
 
 Anyone can read this data directly from the Soroban RPC without going through the MindVault API. The `list(start, limit)` method returns pages of resources in insertion order, enabling a full catalog to be built from chain with no off-chain index.
 
@@ -157,4 +157,5 @@ Commit the updated `packages/registry-client/src/generated/index.ts` so all cons
 - [Soroban contract source](../contract/contracts/vault-registry/)
 - [Reconciliation runbook](reconciliation.md) — detecting drift between the server DB and the on-chain registry
 - [Owner index repair ADR](index-repair.md) — repairing the on-chain pagination index if it drifts from `Resource` storage
+- [Tag index repair design](tag-index-repair-design.md) — the repair contract a future on-chain tag index must satisfy
 - [Creator-signed registration flow](creator-signed-registration-flow.md)

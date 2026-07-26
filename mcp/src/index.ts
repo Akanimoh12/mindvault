@@ -30,6 +30,11 @@ import {
   formatDiagnostics,
   hasBlockingDiagnostics,
 } from "./diagnostics.js";
+import {
+  assertMainnetMutationAllowed,
+  formatMainnetDiagnostics,
+  mainnetAllowedFromEnv,
+} from "./mainnetGuardrails.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -413,6 +418,22 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
   }
 }
 
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
+
+/** Fetch an account's USDC and native (XLM) balances from Horizon. */
+async function getAccountBalances(
+  publicKey: string,
+): Promise<{ usdc: string; native: string; funded: boolean }> {
+  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  if (!res.ok) return { usdc: "0", native: "0", funded: false };
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
+  const native = balances.find((b) => b.asset_type === "native");
+  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
+}
+
+ main
 function formatResource(r: any): string {
   return `[${r.id}] ${r.title} — $${r.price} USDC\n  ${r.description ?? ""}\n  ${r.accessUrl}`;
 }
@@ -1639,6 +1660,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return agentStatus();
     case "mindvault_registry_info":
       return registryInfo();
+    case "mindvault_network_profile":
+      return networkProfile();
     case "mindvault_check_bindings":
       return checkBindings();
     case "mindvault_check_consistency":
@@ -1663,6 +1686,12 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
+
+    // Errors thrown by tools (and by measureTool's re-throw) become a deterministic
+    // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
+    // stripped via safeErrorMessage. Clients should treat that shape as failure.
+ main
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
@@ -1689,5 +1718,12 @@ if (!process.env.VITEST && !MOCK) {
     });
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// Connect stdio when running as a real MCP process. Under Vitest the integration
+// harness (and unit tests) import this module and wire an in-memory transport
+// instead — connecting stdio here would hang the test runner on stdin.
+export { server };
+
+if (!process.env.VITEST) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

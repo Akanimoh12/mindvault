@@ -11,12 +11,21 @@
 const SECRET_PATTERNS = [
   // Stellar secret keys (S followed by 56 base32 characters)
   /S[A-Z2-7]{55}/g,
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
   // Stripe-like / sk_ live or test secrets
   /\bsk_(?:live|test)_[A-Za-z0-9]+/gi,
   // API keys (common patterns)
   /(?:api[_-]?key|apikey|secret[_-]?key|auth[_-]?token|access[_-]?token)[\s=:]+[A-Za-z0-9\-_.]{20,}/gi,
   // Bearer tokens
   /bearer\s+[A-Za-z0-9\-_.]{20,}/gi,
+
+  // Stripe-style / common sk_live / sk_test secrets
+  /sk_(?:live|test)_[A-Za-z0-9]+/gi,
+  // API keys (common patterns)
+  /(?:api[_-]?key|apikey|secret[_-]?key|auth[_-]?token|access[_-]?token)[\s=:]+[A-Za-z0-9._-]{20,}/gi,
+  // Bearer tokens
+  /bearer\s+[A-Za-z0-9._-]{20,}/gi,
+ main
   // Authorization headers
   /authorization[\s=:]+[^\s]+/gi,
   // x-api-key headers
@@ -85,9 +94,15 @@ export function redactObject<T>(obj: T): T {
  */
 function isSecretFieldName(fieldName: string): boolean {
   const secretFields = [
+ fix/418-mcp-add-mcp-catalog-search-filters-parity
     "secretKey",
     "secret_key",
     "secret",
+
+    "secret",
+    "secretKey",
+    "secret_key",
+ main
     "privateKey",
     "private_key",
     "apiKey",
