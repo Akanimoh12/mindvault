@@ -8,8 +8,6 @@ use soroban_sdk::{
     Address, Env, String, TryFromVal, Vec,
 };
 
-const DAY_IN_LEDGERS: u32 = 17_280;
-
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
     let key = DataKey::Resource(id.clone());
     env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
@@ -249,6 +247,140 @@ fn ownership_can_transfer() {
     let new_owner = Address::generate(&env);
     client.transfer_ownership(&id, &new_owner);
     assert_eq!(client.get(&id).creator, new_owner);
+}
+
+fn event_data_as_owners(
+    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
+    topic0_str: &str,
+) -> Option<(Address, Address)> {
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
+        if t0 != Symbol::new(&events.env(), topic0_str) {
+            continue;
+        }
+        let pair: (Address, Address) =
+            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        return Some(pair);
+    }
+    None
+}
+
+fn event_data_as_address(
+    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
+    topic0_str: &str,
+) -> Option<Address> {
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
+        if t0 != Symbol::new(&events.env(), topic0_str) {
+            continue;
+        }
+        let addr: Address = <Address as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        return Some(addr);
+    }
+    None
+}
+
+#[test]
+fn transfer_ownership_event_contains_previous_and_new_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-xfer");
+    let new_owner = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.transfer_ownership(&id, &new_owner);
+
+    let (prev, new) = event_data_as_owners(&env.events().all(), "transfer")
+        .expect("transfer event with (Address, Address) data not found");
+    assert_eq!(prev, creator);
+    assert_eq!(new, new_owner);
+}
+
+#[test]
+fn propose_transfer_event_contains_owner_and_proposed() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-propose");
+    let proposed = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &proposed);
+
+    let (owner, target) = event_data_as_owners(&env.events().all(), "propose")
+        .expect("propose event with (Address, Address) data not found");
+    assert_eq!(owner, creator);
+    assert_eq!(target, proposed);
+}
+
+#[test]
+fn accept_transfer_event_contains_previous_and_new_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-accept");
+    let new_owner = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &new_owner);
+    env.mock_all_auths();
+    client.accept_transfer(&id);
+
+    let events = env.events().all();
+    let mut last_transfer_data: Option<Val> = None;
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() == 2
+            && <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+                == Ok(Symbol::new(&env, "transfer"))
+        {
+            last_transfer_data = Some(data);
+        }
+    }
+    let accept_data = last_transfer_data.as_ref().expect("accept transfer event not found");
+    let (prev, new): (Address, Address) =
+        <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
+            .expect("accept event data should decode to (Address, Address)");
+    assert_eq!(prev, creator);
+    assert_eq!(new, new_owner);
+}
+
+#[test]
+fn cancel_transfer_event_contains_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-cancel");
+    let proposed = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &proposed);
+    client.cancel_transfer(&id);
+
+    let owner = event_data_as_address(&env.events().all(), "cancel")
+        .expect("cancel event with Address data not found");
+    assert_eq!(owner, creator);
 }
 
 #[test]

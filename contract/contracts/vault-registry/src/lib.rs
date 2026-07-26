@@ -255,6 +255,7 @@ impl VaultRegistry {
         if resource.creator == new_creator {
             return Err(Error::AlreadyOwner);
         }
+        let previous_owner = resource.creator.clone();
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
         
@@ -264,7 +265,7 @@ impl VaultRegistry {
         }
 
         env.events()
-            .publish((symbol_short!("transfer"), id), new_creator);
+            .publish((symbol_short!("transfer"), id), (previous_owner, new_creator));
         Ok(())
     }
 
@@ -278,7 +279,7 @@ impl VaultRegistry {
         let key = DataKey::PendingTransfer(id.clone());
         env.storage().persistent().set(&key, &new_creator);
         Self::bump_persistent(&env, &key);
-        env.events().publish((symbol_short!("propose"), id), new_creator);
+        env.events().publish((symbol_short!("propose"), id), (resource.creator, new_creator));
         Ok(())
     }
 
@@ -289,12 +290,13 @@ impl VaultRegistry {
         pending_owner.require_auth();
         
         let mut resource = Self::load(&env, &id)?;
+        let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
         Self::save(&env, &resource);
         
         env.storage().persistent().remove(&key);
         
-        env.events().publish((symbol_short!("transfer"), id), pending_owner);
+        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
         Ok(())
     }
 
@@ -308,7 +310,7 @@ impl VaultRegistry {
             return Err(Error::NoPendingTransfer);
         }
         env.storage().persistent().remove(&key);
-        env.events().publish((symbol_short!("cancel"), id), ());
+        env.events().publish((symbol_short!("cancel"), id), resource.creator);
         Ok(())
     }
 
