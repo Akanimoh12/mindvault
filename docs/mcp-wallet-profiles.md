@@ -18,6 +18,31 @@ restart. Secret keys are never shown in tool output.
 | `mindvault_list_profiles` | List all profiles, marking the active one and showing each wallet address and registration state.    |
 | `mindvault_wallet_info`   | Show the active profile name, wallet address, USDC balance, and whether it is registered.            |
 | `mindvault_reset`         | Clear the active profile's credentials, or pass `all=true` to remove every profile and delete state. |
+| `mindvault_backup_state`  | Export an encrypted backup of `~/.mindvault/state.json` (passphrase min 8 chars). No plaintext secrets in the blob. |
+| `mindvault_restore_state` | Restore state from a `mindvault_backup_state` blob. Integrity-checked before any write.             |
+
+## Moving environments (backup / restore)
+
+When you need to move an agent between machines, export an encrypted backup on
+the source and restore it on the destination. The blob is AES-256-GCM ciphertext
+keyed from your passphrase (scrypt); wallet secret keys and API keys never appear
+in plaintext. Wrong passphrase or a tampered blob fails the integrity check
+before any state is written. Existing `mindvault_reset` behavior is unchanged.
+
+```text
+# Source environment
+mindvault_backup_state { "passphrase": "your-long-passphrase" }
+# → returns a v1:… blob (copy it offline)
+
+# Destination environment
+mindvault_restore_state {
+  "blob": "v1:…",
+  "passphrase": "your-long-passphrase"
+}
+# → State restored: N profile(s), active "…"
+```
+
+Unit coverage: [`mcp/src/stateBackup.test.ts`](../mcp/src/stateBackup.test.ts).
 
 ## Example
 
@@ -64,3 +89,8 @@ named `default` and re-persisted in the current format:
 No action is required — existing wallets keep working as the `default` profile.
 The migration is covered by unit tests in
 [`mcp/src/profiles.test.ts`](../mcp/src/profiles.test.ts).
+
+## Mainnet guardrails
+
+When `STELLAR_NETWORK` is `mainnet`, mutation and buy tools require `confirmMainnet: true` (or process env `MINDVAULT_ALLOW_MAINNET=1`). Profile list/switch/info tools are read-only and stay unrestricted. See [mainnet-deployment-checklist.md](./mainnet-deployment-checklist.md#mcp-mainnet-guardrails).
+
