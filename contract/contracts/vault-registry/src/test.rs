@@ -1585,7 +1585,7 @@ fn update_metadata_failed_validation_emits_no_event() {
 #[test]
 fn update_metadata_too_long_emits_no_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-no-emit-2");
+    let id = String::from_str(&env, "evtnoemit2");
     client.register(
         &creator,
         &id,
@@ -2221,7 +2221,7 @@ fn registry_info_exposes_stable_fields() {
 
     assert_eq!(info.name, String::from_str(&env, REGISTRY_NAME));
     assert_eq!(info.resource_schema_version, RESOURCE_SCHEMA_VERSION);
-    assert!(info.version.len() > 0, "version must not be empty");
+    assert!(!info.version.is_empty(), "version must not be empty");
     assert_eq!(info.network_id, env.ledger().network_id());
 }
 
@@ -2232,7 +2232,7 @@ fn registry_info_is_stable_across_calls_and_registrations() {
 
     client.register(
         &creator,
-        &String::from_str(&env, "info-stability"),
+        &String::from_str(&env, "infostability"),
         &100i128,
         &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
@@ -2284,7 +2284,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
         }
     }
 
-    let r0 = String::from_str(&env, "schema-r0");
+    let r0 = String::from_str(&env, "schemar0");
     client.register(
         &alice,
         &r0,
@@ -2314,7 +2314,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.accept_transfer(&r0);
     record(&env, &client, &mut observed);
 
-    let r1 = String::from_str(&env, "schema-r1");
+    let r1 = String::from_str(&env, "schemar1");
     client.register(
         &alice,
         &r1,
@@ -2326,7 +2326,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.transfer_ownership(&r1, &bob);
     record(&env, &client, &mut observed);
 
-    let r2 = String::from_str(&env, "schema-r2");
+    let r2 = String::from_str(&env, "schemar2");
     client.register(
         &alice,
         &r2,
@@ -2340,7 +2340,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.cancel_transfer(&r2);
     record(&env, &client, &mut observed);
 
-    client.set_terms_hash(&alice, &String::from_str(&env, "terms-hash"));
+    client.set_terms_hash(&alice, &String::from_str(&env, "termshash"));
     record(&env, &client, &mut observed);
 
     let admin1 = Address::generate(&env);
