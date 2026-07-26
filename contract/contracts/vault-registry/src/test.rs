@@ -1,4 +1,4 @@
-﻿#![cfg(test)]
+#![cfg(test)]
 
 use super::*;
 use crate::alloc::format;
@@ -706,7 +706,7 @@ fn set_listed_event_emits_old_and_new_state_relist() {
         &empty_tags(&env),
     );
 
-    // Delist, then relist ΓÇö check both events individually
+    // Delist, then relist — check both events individually
     client.set_listed(&id, &false);
     assert_eq!(
         env.events().all(),
@@ -746,7 +746,7 @@ fn set_listed_event_no_op_same_state() {
         &empty_tags(&env),
     );
 
-    // Set listed=true when already listed ΓåÆ expect (true, true)
+    // Set listed=true when already listed → expect (true, true)
     client.set_listed(&id, &true);
 
     assert_eq!(
@@ -774,7 +774,7 @@ fn delist_convenience_method_emits_old_and_new_state() {
         &empty_tags(&env),
     );
 
-    // delist() delegates to set_listed(false) ΓÇö must emit (true, false)
+    // delist() delegates to set_listed(false) — must emit (true, false)
     // with the "setlisted" topic symbol (not a separate "delist" topic).
     client.delist(&id);
 
@@ -1498,7 +1498,7 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
 
     client.register(&creator, &id, &100i128, &meta_v1, &empty_tags(&env));
 
-    // First update: v1 ΓåÆ v2; check event immediately after this invocation.
+    // First update: v1 → v2; check event immediately after this invocation.
     client.update_metadata(&id, &meta_v2);
     {
         let events = collect_updmeta_events(&env, &client.address);
@@ -1512,7 +1512,7 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
         assert_eq!(e.new_metadata, meta_v2);
     }
 
-    // Second update: v2 ΓåÆ v3; old_metadata in the event must be v2.
+    // Second update: v2 → v3; old_metadata in the event must be v2.
     client.update_metadata(&id, &meta_v3);
     {
         let events = collect_updmeta_events(&env, &client.address);
@@ -1656,7 +1656,7 @@ fn registry_invariant_suite_mixed_ops() {
     assert_eq!(client.count(), 0);
     assert_eq!(client.list(&0u32, &20u32).len(), 0);
 
-    // ΓöÇΓöÇ Step 1: register r0 under alice ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 1: register r0 under alice ──────────────────────────────────────
     let r0 = String::from_str(&env, "invr0");
     let tags0 = tags(&env, &["dataset"]);
     client.register(
@@ -1675,7 +1675,7 @@ fn registry_invariant_suite_mixed_ops() {
         core::slice::from_ref(&tags0),
     );
 
-    // ΓöÇΓöÇ Step 2: register r1 under alice ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 2: register r1 under alice ──────────────────────────────────────
     let r1 = String::from_str(&env, "invr1");
     let empty0 = empty_tags(&env);
     client.register(
@@ -1694,7 +1694,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), empty0.clone()],
     );
 
-    // ΓöÇΓöÇ Step 3: transfer ownership of r0 ΓåÆ bob (count/order unchanged) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 3: transfer ownership of r0 → bob (count/order unchanged) ────────
     client.transfer_ownership(&r0, &bob);
     assert_registry_invariants(
         &client,
@@ -1705,7 +1705,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), empty0.clone()],
     );
 
-    // ΓöÇΓöÇ Step 4: set tags on r1 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 4: set tags on r1 ───────────────────────────────────────────────
     let tags1 = tags(&env, &["research", "alpha"]);
     client.set_tags(&r1, &tags1);
     assert_registry_invariants(
@@ -1717,7 +1717,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), tags1.clone()],
     );
 
-    // ΓöÇΓöÇ Step 5: delist r1 (listing only) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 5: delist r1 (listing only) ─────────────────────────────────────
     client.delist(&r1);
     assert_registry_invariants(
         &client,
@@ -1728,7 +1728,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), tags1.clone()],
     );
 
-    // ΓöÇΓöÇ Step 6: set_price on r0 (bob is owner) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 6: set_price on r0 (bob is owner) ───────────────────────────────
     client.set_price(&r0, &9_999i128);
     assert_registry_invariants(
         &client,
@@ -1739,7 +1739,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), tags1.clone()],
     );
 
-    // ΓöÇΓöÇ Step 7: re-list r1 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 7: re-list r1 ───────────────────────────────────────────────────
     client.set_listed(&r1, &true);
     assert_registry_invariants(
         &client,
@@ -1750,7 +1750,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), tags1.clone()],
     );
 
-    // ΓöÇΓöÇ Step 8: register r2 under bob ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Step 8: register r2 under bob ────────────────────────────────────────
     let r2 = String::from_str(&env, "invr2");
     let tags2 = tags(&env, &["beta"]);
     client.register(
@@ -1769,7 +1769,7 @@ fn registry_invariant_suite_mixed_ops() {
         &[tags0.clone(), tags1.clone(), tags2.clone()],
     );
 
-    // ΓöÇΓöÇ Deterministic failure cases ΓÇö must not corrupt invariants ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── Deterministic failure cases — must not corrupt invariants ────────────
 
     // Duplicate registration does not change count / order / state.
     assert_eq!(
@@ -2007,7 +2007,7 @@ proptest! {
     }
 }
 
-// ΓöÇΓöÇ Tag removal event semantics (#362) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// ── Tag removal event semantics (#362) ──────────────────────────────────────
 
 #[test]
 fn set_tags_event_includes_prev_and_next() {
