@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "ttlprice"
+                  "string": "ttl-price"
                 },
                 {
                   "i128": {
@@ -50,7 +50,7 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "ttlprice"
+                  "string": "ttl-price"
                 },
                 {
                   "i128": {
@@ -115,7 +115,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "ttlprice"
+                      "string": "ttl-price"
                     }
                   ]
                 }
@@ -162,7 +162,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "ttlprice"
+                  "string": "ttl-price"
                 }
               }
             },
@@ -181,7 +181,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "ttlprice"
+                  "string": "ttl-price"
                 }
               ]
             },
@@ -201,7 +201,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "ttlprice"
+                      "string": "ttl-price"
                     }
                   ]
                 },
@@ -218,18 +218,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "frozen"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "ttlprice"
+                        "string": "ttl-price"
                       }
                     },
                     {
@@ -265,18 +257,6 @@
                       },
                       "val": {
                         "vec": []
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "verified"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Pending"
-                          }
-                        ]
                       }
                     }
                   ]

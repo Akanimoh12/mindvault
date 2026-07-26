@@ -1923,13 +1923,6 @@ fn creator_resource_count_increments_on_register() {
     // Failed duplicate does not inflate count.
     let dup = String::from_str(&env, "r1");
     assert_eq!(
-        client.try_register(
-            &creator,
-            &dup,
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &empty_tags(&env)
-        ),
         client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env)),
         Err(Ok(Error::AlreadyRegistered)),
     );

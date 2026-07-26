@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "metaupdok"
+                  "string": "meta-upd-ok"
                 },
                 {
                   "i128": {
@@ -49,7 +49,7 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "metaupdok"
+                  "string": "meta-upd-ok"
                 },
                 {
                   "string": "ipfs://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -111,7 +111,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "metaupdok"
+                      "string": "meta-upd-ok"
                     }
                   ]
                 }
@@ -158,7 +158,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "metaupdok"
+                  "string": "meta-upd-ok"
                 }
               }
             },
@@ -177,7 +177,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "metaupdok"
+                  "string": "meta-upd-ok"
                 }
               ]
             },
@@ -197,7 +197,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "metaupdok"
+                      "string": "meta-upd-ok"
                     }
                   ]
                 },
@@ -214,18 +214,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "frozen"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "metaupdok"
+                        "string": "meta-upd-ok"
                       }
                     },
                     {
@@ -261,18 +253,6 @@
                       },
                       "val": {
                         "vec": []
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "verified"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Pending"
-                          }
-                        ]
                       }
                     }
                   ]

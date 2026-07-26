@@ -11,12 +11,6 @@
 const SECRET_PATTERNS = [
   // Stellar secret keys (S followed by 56 base32 characters)
   /S[A-Z2-7]{55}/g,
-  // Stripe-style / sk_live secrets
-  /\bsk_(?:live|test)_[A-Za-z0-9]+\b/g,
-  // API keys (common patterns)
-  /(?:api[_-]?key|apikey|secret[_-]?key|auth[_-]?token|access[_-]?token)[\s=:]+[A-Za-z0-9\-_.]{20,}/gi,
-  // Bearer tokens
-  /bearer\s+[A-Za-z0-9\-_.]{20,}/gi,
   // Stripe-style / common sk_live / sk_test secrets
   /sk_(?:live|test)_[A-Za-z0-9]+/gi,
   // API keys (common patterns)
@@ -112,7 +106,6 @@ function isSecretFieldName(fieldName: string): boolean {
   ];
 
   const lowerName = fieldName.toLowerCase();
-  return secretFields.some((field) => lowerName.includes(field));
   return secretFields.some((field) => lowerName.includes(field.toLowerCase()));
 }
 

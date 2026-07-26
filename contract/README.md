@@ -154,9 +154,6 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                  | Triggered by                                               |
-| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
 | Event      | Payload                           | Triggered by                                                                                                           |
 | ---------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `register` | `Resource` (full resource record) | `register()` succeeds                                                                                                  |
@@ -289,7 +286,21 @@ separate config lookup. It always succeeds; there is no error case.
 
 ### WASM Size Budget
 
-To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI
+To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI.
+
+Currently, the limit is **10,240 bytes (10 KB)**.
+| `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer, in bytes. |
+| `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash, in bytes. |
+| `MAX_PRICE` | `10^18` | Maximum price, in USDC stroops. |
+
+### WASM size budget
+
+### Breaking change: tags on `register` (v2)
+
+`register` now requires a fifth argument `tags: Vec<String>`. Existing callers must pass
+`[]` (empty tags) until they adopt labels. The `Resource` struct gains a `tags` field;
+`set_tags` updates tags without touching `metadata`.
+This contract enforces a strictly tracked optimized WASM size budget in CI
 (`stellar contract build --optimize`). Currently the limit is **28,672 bytes
 (28 KB)** — raised from a stale 10 KB figure that had already been exceeded
 by the accumulated tags/pagination/admin/terms-hash surface before this round
@@ -297,12 +308,6 @@ of changes (~5 KB of headroom above the current optimized size of ~23 KB). If
 genuine feature additions push past it, raise `MAX_SIZE` in
 `.github/workflows/contract-ci.yml` and explain the growth in your PR
 description.
-
-### Breaking change: tags on `register` (v2)
-
-`register` now requires a fifth argument `tags: Vec<String>`. Existing callers must pass
-`[]` (empty tags) until they adopt labels. The `Resource` struct gains a `tags` field;
-`set_tags` updates tags without touching `metadata`.
 
 ### Emergency pause
 

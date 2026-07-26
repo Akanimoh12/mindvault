@@ -12,8 +12,6 @@ import { describe, it, expect } from "vitest";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", () => {
-    // Inline expected tool names from index.ts for validation (avoid importing
-    // index.ts here — that module starts the stdio transport).
     // Inline expected tool names from index.ts for snapshot validation.
     // Integration tests assert the live ListTools response via the SDK harness.
     const expectedToolNames = [
