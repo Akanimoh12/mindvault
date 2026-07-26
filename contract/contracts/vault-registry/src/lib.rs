@@ -186,6 +186,11 @@ pub enum Error {
     ReservedId = 15,
     PriceExceedsMax = 16,
     EmptyMetadata = 17,
+    EmptyMetadata = 13,
+    AlreadyOwner = 14,
+    NoPendingTransfer = 15,
+    ReservedId = 16,
+    PriceExceedsMax = 17,
     AdminNotSet = 18,
     NotVerifier = 19,
     InvalidVerificationTransition = 20,
@@ -802,6 +807,10 @@ impl VaultRegistry {
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
         env.storage().persistent().get(&key).ok_or(Error::NotFound)
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
     }
 }
 

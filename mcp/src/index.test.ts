@@ -433,6 +433,10 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
     expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
     expect(parsed.after).toHaveProperty("purchased", true);
     expect(parsed.changedFields).toContain("purchased");
+    expect(parsed).toHaveProperty("after");
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 
   it("returns an insufficient-funds message when wallet balance is too low", async () => {
@@ -532,6 +536,7 @@ describe("buy – output shape for agent consumption", () => {
     // Output must be parseable JSON – agents rely on this.
     expect(() => JSON.parse(result)).not.toThrow();
     const parsed = JSON.parse(result);
+    expect(parsed).toHaveProperty("after");
     expect(parsed.after).toHaveProperty("id");
     expect(parsed.after).toHaveProperty("accessUrl");
     expect(parsed.after).toHaveProperty("purchased", true);
