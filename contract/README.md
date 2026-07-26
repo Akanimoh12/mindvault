@@ -17,9 +17,8 @@ reads the canonical resource entry here.
 
 | Function | Auth | Args | Returns | Description |
 |----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
-| `set_price(id, new_price)` | `creator` | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0) | `Result<(), Error>` | Update the resource price. |
-| `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes) | `Result<(), Error>` | Update the metadata pointer. |
+| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
+| `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Update the metadata pointer. |
 | `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
 | `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
 | `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |

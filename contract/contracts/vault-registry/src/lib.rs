@@ -477,6 +477,9 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
+        if metadata.len() == 0 {
+            return Err(Error::EmptyMetadata);
+        }
         if metadata.len() > MAX_METADATA_POINTER_LEN {
             return Err(Error::MetadataTooLong);
         }
