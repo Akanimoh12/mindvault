@@ -1,8 +1,6 @@
 #![cfg(test)]
 
 use super::*;
-use crate::alloc::format;
-use crate::alloc::string::ToString;
 use alloc::{format, string::ToString};
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -1932,13 +1930,6 @@ fn creator_resource_count_increments_on_register() {
             &String::from_str(&env, "ipfs://m"),
             &empty_tags(&env)
         ),
-        client.try_register(
-            &creator,
-            &dup,
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &empty_tags(&env)
-        ),
         Err(Ok(Error::AlreadyRegistered)),
     );
     assert_eq!(client.creator_resource_count(&creator), 2);
@@ -1997,7 +1988,6 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
-        id_str in r"[a-zA-Z0-9_-]{1,24}",
         id_str in r"[a-z0-9]{1,24}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
@@ -2048,9 +2038,6 @@ proptest! {
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-
     let id = String::from_str(&env, "eventtest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2095,9 +2082,6 @@ fn set_tags_event_includes_prev_and_next() {
 #[test]
 fn set_tags_event_supports_tag_removal() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "removal-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-
     let id = String::from_str(&env, "removaltest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2126,9 +2110,6 @@ fn set_tags_event_supports_tag_removal() {
 #[test]
 fn set_tags_event_supports_tag_addition() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "addition-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-
     let id = String::from_str(&env, "additiontest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2157,9 +2138,6 @@ fn set_tags_event_supports_tag_addition() {
 #[test]
 fn set_tags_event_on_replacement() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "replace-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-
     let id = String::from_str(&env, "replacetest");
     let metadata = String::from_str(&env, "ipfs://m");
 
