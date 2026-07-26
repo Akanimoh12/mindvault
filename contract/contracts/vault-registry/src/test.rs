@@ -1584,9 +1584,6 @@ fn update_metadata_too_long_emits_no_event() {
         &100i128,
         &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
-    assert_eq!(
-        client.get(&id).metadata,
-        String::from_str(&env, "ipfs://valid")
     );
 
     let too_long = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
