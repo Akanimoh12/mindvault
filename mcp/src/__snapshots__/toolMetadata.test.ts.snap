@@ -11,6 +11,7 @@ exports[`MCP tool metadata > all tools have required fields 1`] = `
   "mindvault_preview",
   "mindvault_register",
   "mindvault_publish",
+  "mindvault_publish_status",
   "mindvault_buy",
   "mindvault_register_onchain",
   "mindvault_agent_status",

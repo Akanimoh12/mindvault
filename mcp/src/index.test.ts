@@ -48,6 +48,7 @@ import {
   browse,
   search,
   preview,
+  publishStatus,
   txStatus,
   buy,
   registerOnchain,
@@ -292,6 +293,166 @@ describe("preview", () => {
   });
 });
 
+describe("publishStatus", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function mockMetaAndVerification(opts: {
+    verificationStatus: string;
+    onchainStatus?: string;
+    onchainTxHash?: string | null;
+    listed?: boolean;
+  }) {
+    const meta = {
+      id: "res-001",
+      title: "Introduction to Stellar",
+      verificationStatus: opts.verificationStatus,
+      onchainStatus: opts.onchainStatus ?? "none",
+      onchainTxHash: opts.onchainTxHash ?? null,
+      contentHash: "abc123",
+      accessUrl: "https://example.com/stellar-intro",
+      listed: opts.listed ?? opts.verificationStatus === "verified",
+    };
+    const verification = {
+      resourceId: "res-001",
+      title: "Introduction to Stellar",
+      status: opts.verificationStatus,
+      listed: opts.listed ?? opts.verificationStatus === "verified",
+      verification:
+        opts.verificationStatus === "verified"
+          ? {
+              isOriginal: true,
+              confidence: 0.95,
+              flags: [],
+              checkedAt: "2026-01-01T00:00:00.000Z",
+            }
+          : null,
+    };
+    return vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      if (url.includes("/verification")) return Promise.resolve(mockResponse(verification));
+      if (url.includes("/meta")) return Promise.resolve(mockResponse(meta));
+      return Promise.resolve(mockResponse({ error: "unexpected" }, false, 500));
+    });
+  }
+
+  it("reports verified status with on-chain sync fields", async () => {
+    mockMetaAndVerification({
+      verificationStatus: "verified",
+      onchainStatus: "registered",
+      onchainTxHash: "txhash1",
+    });
+    const parsed = JSON.parse(await publishStatus({ resourceId: "res-001" }));
+    expect(parsed.verificationStatus).toBe("verified");
+    expect(parsed.onchainStatus).toBe("registered");
+    expect(parsed.onchainTxHash).toBe("txhash1");
+    expect(parsed.listed).toBe(true);
+    expect(parsed.settled).toBe(true);
+    expect(parsed.polled).toBe(false);
+    expect(parsed.attempts).toBe(1);
+  });
+
+  it("reports pending, rejected, and skipped statuses", async () => {
+    for (const status of ["pending", "rejected", "skipped"] as const) {
+      mockMetaAndVerification({ verificationStatus: status, onchainStatus: "none" });
+      const parsed = JSON.parse(await publishStatus({ resourceId: "res-001" }));
+      expect(parsed.verificationStatus).toBe(status);
+      expect(parsed.settled).toBe(status !== "pending");
+      expect(parsed.onchainStatus).toBe("none");
+    }
+  });
+
+  it("throws a deterministic error when resourceId is missing", async () => {
+    await expect(publishStatus({})).rejects.toThrow(/resourceId is required/);
+    await expect(publishStatus({ resourceId: "   " })).rejects.toThrow(/resourceId is required/);
+  });
+
+  it("throws a deterministic 404 error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "Resource not found" }, false, 404),
+    );
+    await expect(publishStatus({ resourceId: "missing" })).rejects.toThrow(/not found/i);
+  });
+
+  it("polls until verification settles when wait is true", async () => {
+    vi.useFakeTimers();
+    let round = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      // Advance the poll round only on meta requests so meta+verification stay
+      // consistent within a single Promise.all pair.
+      if (url.includes("/meta")) round += 1;
+      const status = round < 2 ? "pending" : "verified";
+      if (url.includes("/verification")) {
+        return Promise.resolve(
+          mockResponse({
+            resourceId: "res-001",
+            status,
+            listed: status === "verified",
+            verification: null,
+          }),
+        );
+      }
+      if (url.includes("/meta")) {
+        return Promise.resolve(
+          mockResponse({
+            id: "res-001",
+            verificationStatus: status,
+            onchainStatus: status === "verified" ? "pending" : "none",
+            onchainTxHash: null,
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse({ error: "unexpected" }, false, 500));
+    });
+
+    const pending = publishStatus({
+      resourceId: "res-001",
+      wait: true,
+      timeoutMs: 10_000,
+      intervalMs: 500,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const parsed = JSON.parse(await pending);
+    expect(parsed.verificationStatus).toBe("verified");
+    expect(parsed.settled).toBe(true);
+    expect(parsed.polled).toBe(true);
+    expect(parsed.attempts).toBeGreaterThan(1);
+    expect(parsed.onchainStatus).toBe("pending");
+  });
+
+  it("returns timedOut when wait expires while still pending", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      const body = url.includes("/verification")
+        ? { resourceId: "res-001", status: "pending", listed: false, verification: null }
+        : {
+            id: "res-001",
+            verificationStatus: "pending",
+            onchainStatus: "none",
+            onchainTxHash: null,
+          };
+      return Promise.resolve(mockResponse(body));
+    });
+
+    const pending = publishStatus({
+      resourceId: "res-001",
+      wait: true,
+      timeoutMs: 1_000,
+      intervalMs: 200,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const parsed = JSON.parse(await pending);
+    expect(parsed.verificationStatus).toBe("pending");
+    expect(parsed.timedOut).toBe(true);
+    expect(parsed.settled).toBe(false);
+    expect(parsed.message).toMatch(/Timed out/);
+  });
+});
+
 describe("txStatus", () => {
   const successEnvelope = {
     jsonrpc: "2.0",
@@ -429,8 +590,9 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
 
     const result = await buy("res-001");
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id", "res-001");
-    expect(parsed).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 
   it("returns an insufficient-funds message when wallet balance is too low", async () => {
@@ -530,8 +692,9 @@ describe("buy – output shape for agent consumption", () => {
     // Output must be parseable JSON – agents rely on this.
     expect(() => JSON.parse(result)).not.toThrow();
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id");
-    expect(parsed).toHaveProperty("accessUrl");
+    expect(parsed.after).toHaveProperty("id");
+    expect(parsed.after).toHaveProperty("accessUrl");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 });
 
@@ -947,7 +1110,6 @@ describe("wallet_info balance details", () => {
     await expect(walletInfo()).rejects.toThrow("Horizon error 500");
   });
 });
-
 
 // ── networkProfile (#412) ───────────────────────────────────────────────────
 

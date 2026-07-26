@@ -23,13 +23,18 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { cacheStalenessNotice } from "./cacheStaleness.js";
 import {
   collectStartupDiagnostics,
   formatDiagnostics,
   hasBlockingDiagnostics,
 } from "./diagnostics.js";
+import {
+  assertMainnetMutationAllowed,
+  formatMainnetDiagnostics,
+  mainnetAllowedFromEnv,
+} from "./mainnetGuardrails.js";
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -40,19 +45,17 @@ import {
   type ProfileState,
   type WalletProfile,
 } from "./profiles.js";
-import { signMutatingHeaders } from "./requestSignature.js";
-import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
 import {
-  type WalletProfile,
-  type AgentWallet,
-  type ProfileState,
-  DEFAULT_PROFILE,
-  STATE_VERSION,
-  isValidProfileName,
-  migrateState,
-} from "./profiles.js";
+  buildPublishStatusSnapshot,
+  isVerificationSettled,
+  normalizeIntervalMs,
+  normalizeTimeoutMs,
+  normalizeWaitFlag,
+  type PublishStatusFetch,
+} from "./publishStatus.js";
+import { safeErrorMessage } from "./redaction.js";
+import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState } from "./stateBackup.js";
-import { safeErrorMessage, safeLog } from "./redaction.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -417,21 +420,6 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
   } catch {
     return "0";
   }
-/** Fetch an account's USDC and native (XLM) balances from Horizon. */
-async function getAccountBalances(
-  publicKey: string,
-): Promise<{ usdc: string; native: string; funded: boolean }> {
-  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
-  if (!res.ok) return { usdc: "0", native: "0", funded: false };
-  const data: any = await res.json();
-  const balances: any[] = data.balances ?? [];
-  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
-  const native = balances.find((b) => b.asset_type === "native");
-  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
-}
-
-async function getUsdcBalance(publicKey: string): Promise<string> {
-  return (await getAccountBalances(publicKey)).usdc;
 }
 
 function formatResource(r: any): string {
@@ -689,6 +677,111 @@ export async function preview(resourceId: string): Promise<string> {
   );
 }
 
+/**
+ * Fetch one publish-status snapshot from the API (meta + verification endpoints).
+ * Deterministic errors: missing id, 404, and non-OK responses.
+ */
+async function fetchPublishStatusData(resourceId: string): Promise<PublishStatusFetch> {
+  // Sequential fetches keep meta + verification consistent for a single poll tick
+  // (avoids racing two parallel responses that could disagree mid-transition).
+  const metaRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
+  const verRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/verification`);
+
+  if (metaRes.status === 404 && verRes.status === 404) {
+    throw new Error(
+      `Resource "${resourceId}" not found. Confirm the id from mindvault_publish or mindvault_browse.`,
+    );
+  }
+
+  // Prefer meta for on-chain sync fields; verification endpoint may 404 briefly
+  // for brand-new resources, so allow meta-only when verification is missing.
+  if (!metaRes.ok && metaRes.status !== 404) {
+    throw new Error(
+      `Publish status meta failed [${metaRes.status}]: ${JSON.stringify(metaRes.data)}`,
+    );
+  }
+  if (!verRes.ok && verRes.status !== 404) {
+    throw new Error(
+      `Publish status verification failed [${verRes.status}]: ${JSON.stringify(verRes.data)}`,
+    );
+  }
+  if (!metaRes.ok && !verRes.ok) {
+    throw new Error(
+      `Resource "${resourceId}" not found. Confirm the id from mindvault_publish or mindvault_browse.`,
+    );
+  }
+
+  return {
+    meta: metaRes.ok ? metaRes.data : null,
+    verification: verRes.ok ? verRes.data : null,
+  };
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll resource verification / on-chain sync status after publish.
+ *
+ * Reports verificationStatus (pending | verified | rejected | skipped) and
+ * on-chain sync fields (onchainStatus, onchainTxHash). Pass wait: true to poll
+ * until verification settles or timeoutMs elapses.
+ */
+export async function publishStatus(args: {
+  resourceId?: string;
+  wait?: unknown;
+  timeoutMs?: unknown;
+  intervalMs?: unknown;
+}): Promise<string> {
+  const resourceId = (args.resourceId ?? "").trim();
+  if (!resourceId) {
+    throw new Error(
+      "resourceId is required. Pass the id returned by mindvault_publish (e.g. 'cm7x8y9z').",
+    );
+  }
+
+  const wait = normalizeWaitFlag(args.wait);
+  const timeoutMs = normalizeTimeoutMs(args.timeoutMs);
+  const intervalMs = normalizeIntervalMs(args.intervalMs);
+
+  let attempts = 0;
+  let timedOut = false;
+  const deadline = wait ? Date.now() + timeoutMs : Date.now();
+
+  // Always fetch at least once.
+  let data = await fetchPublishStatusData(resourceId);
+  attempts += 1;
+
+  while (wait) {
+    const status = data.verification?.status ?? data.meta?.verificationStatus ?? "pending";
+    if (isVerificationSettled(status)) break;
+    if (Date.now() >= deadline) {
+      timedOut = true;
+      break;
+    }
+    const remaining = deadline - Date.now();
+    await sleepMs(Math.min(intervalMs, Math.max(0, remaining)));
+    if (Date.now() >= deadline) {
+      // One last fetch after the wait window.
+      data = await fetchPublishStatusData(resourceId);
+      attempts += 1;
+      const last = data.verification?.status ?? data.meta?.verificationStatus ?? "pending";
+      timedOut = !isVerificationSettled(last);
+      break;
+    }
+    data = await fetchPublishStatusData(resourceId);
+    attempts += 1;
+  }
+
+  const snapshot = buildPublishStatusSnapshot(resourceId, data, {
+    polled: wait,
+    attempts,
+    timedOut,
+  });
+  return JSON.stringify(snapshot, null, 2);
+}
+
 async function register(name: string, email: string, walletAddress?: string): Promise<string> {
   const wallet = requireWallet();
   const res = await jsonFetch(`${BASE_URL}/publishers`, {
@@ -853,13 +946,15 @@ export async function buy(resourceId: string): Promise<string> {
     if (shortMsg) return shortMsg;
   }
 
-  const beforeState = meta.ok ? {
-    id: meta.data.id,
-    title: meta.data.title,
-    price: meta.data.price,
-    accessUrl: meta.data.accessUrl,
-    purchased: false,
-  } : null;
+  const beforeState = meta.ok
+    ? {
+        id: meta.data.id,
+        title: meta.data.title,
+        price: meta.data.price,
+        accessUrl: meta.data.accessUrl,
+        purchased: false,
+      }
+    : null;
 
   const paidFetch = makePaidFetch(wallet);
   const res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
@@ -1208,11 +1303,15 @@ async function checkConsistency(resourceId: string): Promise<string> {
   // ID should always match
   report.matches.id = { api: apiData.id, onchain: onchainData.id };
 
-  const summary = Object.keys(report.mismatches).length === 0
-    ? "All compared fields match between API and on-chain registry."
-    : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
+  const summary =
+    Object.keys(report.mismatches).length === 0
+      ? "All compared fields match between API and on-chain registry."
+      : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
 
   return JSON.stringify({ ...report, summary }, null, 2);
+}
+
+/**
  * Report the current Stellar and x402 network configuration in use by this MCP
  * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
  * USDC contract IDs, and warnings for environment variable overrides that
@@ -1223,14 +1322,23 @@ export function networkProfile(): string {
 
   // Detect custom overrides that differ from the preset
   const usdcContractId = process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId;
-  if (process.env.USDC_CONTRACT_ID && process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId) {
-    warnings.push(`USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`);
+  if (
+    process.env.USDC_CONTRACT_ID &&
+    process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId
+  ) {
+    warnings.push(
+      `USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`,
+    );
   }
   if (process.env.SOROBAN_RPC_URL && process.env.SOROBAN_RPC_URL !== networkPreset.sorobanRpcUrl) {
-    warnings.push(`SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`);
+    warnings.push(
+      `SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`,
+    );
   }
   if (process.env.HORIZON_URL && process.env.HORIZON_URL !== networkPreset.horizonUrl) {
-    warnings.push(`HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`);
+    warnings.push(
+      `HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`,
+    );
   }
   if (
     process.env.VAULT_REGISTRY_CONTRACT_ID &&
@@ -1242,7 +1350,9 @@ export function networkProfile(): string {
     );
   }
   if (process.env.NETWORK && process.env.NETWORK !== networkPreset.x402Network) {
-    warnings.push(`NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`);
+    warnings.push(
+      `NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`,
+    );
   }
 
   const profile = {
@@ -1256,18 +1366,6 @@ export function networkProfile(): string {
   };
 
   return JSON.stringify(profile, null, 2);
-}
-
-/**
- * Return opt-in tool-level metrics: per-tool call/error counts and durations,
- * plus payment attempt/failure totals. Output is always safe for agent
- * consumption (contains only tool names, counts, and durations — never
- * arguments, wallets, or API keys).
- */
-function toolMetrics(reset: boolean): string {
-  const snapshot = metrics.snapshot();
-  if (reset && metrics.enabled) metrics.reset();
-  return JSON.stringify(snapshot, null, 2);
 }
 
 /**
@@ -1285,29 +1383,6 @@ async function checkBindings(): Promise<string> {
     network: STELLAR_NETWORK,
   });
   return result.message;
-}
-
-/**
- * Return the current metrics snapshot as JSON. Only counts, durations, and tool
- * names are included — never arguments, wallets, or API keys. When metrics are
- * disabled, returns an actionable note instead of counters. Pass reset=true to
- * clear counters after reading.
- */
-function toolMetrics(reset: boolean): string {
-  const snapshot = metrics.snapshot();
-  if (reset) metrics.reset();
-  if (!snapshot.enabled) {
-    return JSON.stringify(
-      {
-        enabled: false,
-        message:
-          "Metrics are disabled. Set MINDVAULT_METRICS=1 (or true/yes/on) and restart the server to collect tool-level metrics.",
-      },
-      null,
-      2,
-    );
-  }
-  return JSON.stringify(snapshot, null, 2);
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
@@ -1447,7 +1522,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
-
         },
         required: ["name", "email"],
       },
@@ -1468,14 +1542,48 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
-
         },
         required: ["title", "price", "externalUrl"],
       },
     },
     {
+      name: "mindvault_publish_status",
+      description:
+        "Poll a published resource's verification and on-chain sync status. Returns verificationStatus (pending, verified, rejected, skipped), listed, onchainStatus, onchainTxHash, and optional verification details. Pass wait: true to poll until verification settles or timeoutMs elapses. Deterministic errors for missing resourceId and 404s.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          resourceId: {
+            type: "string",
+            description:
+              "The resource ID from mindvault_publish (or browse/search). Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "swcn98besxpp6t1u8e77fqz3"],
+          },
+          wait: {
+            type: "boolean",
+            description:
+              "When true, poll until verificationStatus is verified, rejected, or skipped (or until timeoutMs). Default false (single fetch).",
+          },
+          timeoutMs: {
+            type: "number",
+            description:
+              "Max wait time in milliseconds when wait is true (default 60000, max 300000).",
+            examples: [30000, 60000, 120000],
+          },
+          intervalMs: {
+            type: "number",
+            description:
+              "Delay between polls in milliseconds when wait is true (default 2000, min 200).",
+            examples: [1000, 2000, 5000],
+          },
+        },
+        required: ["resourceId"],
+      },
+    },
+    {
       name: "mindvault_buy",
-      description: "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
+      description:
+        "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
       inputSchema: {
         type: "object",
         properties: {
@@ -1618,7 +1726,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           passphrase: {
             type: "string",
-            description: "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
+            description:
+              "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
           },
         },
         required: ["passphrase"],
@@ -1695,6 +1804,13 @@ async function dispatchTool(name: string, args: any): Promise<string> {
         price: args.price as string,
         externalUrl: args.externalUrl as string,
       });
+    case "mindvault_publish_status":
+      return publishStatus({
+        resourceId: args.resourceId as string | undefined,
+        wait: args.wait,
+        timeoutMs: args.timeoutMs,
+        intervalMs: args.intervalMs,
+      });
     case "mindvault_buy":
       return buy(args.resourceId as string);
     case "mindvault_register_onchain":
@@ -1703,6 +1819,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return agentStatus();
     case "mindvault_registry_info":
       return registryInfo();
+    case "mindvault_network_profile":
+      return networkProfile();
     case "mindvault_check_bindings":
       return checkBindings();
     case "mindvault_check_consistency":
@@ -1727,93 +1845,6 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
-    assertMainnetMutationAllowed(STELLAR_NETWORK, name, args as Record<string, unknown>);
-    let result: string;
-    switch (name) {
-      case "mindvault_setup_wallet":
-        result = await setupWallet(args.profile as string | undefined);
-        break;
-      case "mindvault_wallet_info":
-        result = await walletInfo();
-        break;
-      case "mindvault_use_profile":
-        result = useProfile(args.name as string);
-        break;
-      case "mindvault_list_profiles":
-        result = listProfiles();
-        break;
-      case "mindvault_browse":
-        result = await browse();
-        break;
-      case "mindvault_search": {
-        const filters = normalizeSearchFilters(args);
-        if (!filters) {
-          result = "Provide a non-empty search query.";
-        } else {
-          result = await search(filters);
-        }
-        break;
-      }
-      case "mindvault_preview":
-        result = await preview(args.resourceId as string);
-        break;
-      case "mindvault_register":
-        result = await register(
-          args.name as string,
-          args.email as string,
-          args.walletAddress as string | undefined,
-        );
-        break;
-      case "mindvault_publish":
-        result = await publish({
-          title: args.title as string,
-          description: args.description as string | undefined,
-          price: args.price as string,
-          externalUrl: args.externalUrl as string,
-        });
-        break;
-      case "mindvault_buy":
-        result = await buy(args.resourceId as string);
-        break;
-      case "mindvault_register_onchain":
-        result = await registerOnchain(args.resourceId as string);
-        break;
-      case "mindvault_agent_status":
-        result = await agentStatus();
-        break;
-      case "mindvault_registry_info":
-        result = registryInfo();
-        break;
-      case "mindvault_network_profile":
-        result = networkProfile();
-        break;
-      case "mindvault_check_bindings":
-        result = await checkBindings();
-        break;
-      case "mindvault_check_consistency":
-        result = await checkConsistency(args.resourceId as string);
-        break;
-      case "mindvault_registry_lookup":
-        result = await registryLookup(args.resourceId as string);
-        break;
-      case "mindvault_tx_status":
-        result = await txStatus(args.txHash as string);
-        break;
-      case "mindvault_reset":
-        result = resetState(args.all === true);
-        break;
-      case "mindvault_backup_state":
-        result = backupState(args.passphrase as string);
-        break;
-      case "mindvault_restore_state":
-        result = restoreStateTool(args.blob as string, args.passphrase as string);
-        break;
-      case "mindvault_metrics":
-        result = toolMetrics(args.reset === true);
-        break;
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
@@ -1840,5 +1871,7 @@ if (!process.env.VITEST && !MOCK) {
     });
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+if (!process.env.VITEST) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

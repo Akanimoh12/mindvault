@@ -7,44 +7,9 @@
  * descriptions or examples.
  */
 import { describe, it, expect } from "vitest";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", async () => {
-    // Create a minimal server instance (no real transport needed for ListTools)
-    const server = new Server({ name: "test", version: "1.0.0" }, { capabilities: { tools: {} } });
-
-    // Import and wire the real ListTools handler from index.ts by requiring it
-    // as a module (this ensures we test the actual deployed metadata).
-    const { default: indexModule } = await import("./index.js");
-
-    // The handler is set on the real server at module load; we need to extract it.
-    // Since the test env may not have a real stdio transport, we construct the
-    // response directly by calling the handler function. The actual server in
-    // index.ts registers it like:
-    //   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...] }))
-    //
-    // We'll re-import the same logic here by reading the tools list from the
-    // module's server instance (or reconstruct it). For simplicity, we'll inline
-    // the expected structure and validate it matches the source of truth.
-
-    // ALTERNATIVE: since index.ts exports the server at module scope and it's
-    // already wired when imported, we can't easily extract the handler. Instead,
-    // we'll verify the shape of the tools array by spot-checking a few critical
-    // tools and their schemas.
-
-    // For a true snapshot test, we need the actual tool list. Let's refactor to
-    // export the tools array from index.ts, or inline it here for now.
-
-    // Quick approach: copy the tool list here for snapshot validation (not DRY,
-    // but works for the test). In production, you'd refactor index.ts to export
-    // `export const tools = [ ... ]` and import it here.
-
-    // Since we can't easily extract the handler from the opaque Server, let's
-    // verify by checking the structure of a sample response and snapshotting the
-    // tool names + a couple representative schemas.
-
     // Inline the expected tool names from index.ts for validation:
     const expectedToolNames = [
       "mindvault_setup_wallet",
@@ -56,6 +21,7 @@ describe("MCP tool metadata", () => {
       "mindvault_preview",
       "mindvault_register",
       "mindvault_publish",
+      "mindvault_publish_status",
       "mindvault_buy",
       "mindvault_register_onchain",
       "mindvault_agent_status",
@@ -140,8 +106,7 @@ describe("MCP tool metadata", () => {
         },
         price: {
           type: "string",
-          description:
-            "Price in USDC (decimal string). Example: '5.00' charges 5 USDC per access.",
+          description: "Price in USDC (decimal string). Example: '5.00' charges 5 USDC per access.",
           examples: ["5.00", "10.50", "0.99", "25.00"],
         },
         externalUrl: {
