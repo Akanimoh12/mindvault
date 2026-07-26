@@ -109,16 +109,19 @@ All other variables are either public addresses or non-sensitive configuration. 
 
 ## MCP
 
-| Variable                       | Required | Default   | Description                                                                                             |
-| ------------------------------ | -------- | --------- | ------------------------------------------------------------------------------------------------------- |
-| `STELLAR_NETWORK`              | no       | `testnet` | MCP deployment target (`testnet` or `mainnet` / `pubnet` / `public`).                                   |
-| `MINDVAULT_ALLOW_MAINNET`      | no       | unset     | Set to `1` / `true` to allow gated MCP mutations and buys on mainnet without per-call `confirmMainnet`. |
-| `MINDVAULT_HTTP_TIMEOUT_MS`    | no       | `15000`   | Request deadline for the MindVault API and sponsored-account service. `0` disables.                     |
-| `MINDVAULT_HORIZON_TIMEOUT_MS` | no       | `15000`   | Request deadline for Horizon balance/account reads. `0` disables.                                       |
-| `MINDVAULT_SOROBAN_TIMEOUT_MS` | no       | `20000`   | Request deadline for Soroban RPC calls. `0` disables.                                                   |
-| `MINDVAULT_PAYMENT_TIMEOUT_MS` | no       | `45000`   | Request deadline for x402 paid fetches, which include on-chain settlement. `0` disables.                |
+| Variable                        | Required | Default   | Description                                                                                             |
+| ------------------------------- | -------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| `STELLAR_NETWORK`               | no       | `testnet` | MCP deployment target (`testnet` or `mainnet` / `pubnet` / `public`).                                   |
+| `MINDVAULT_ALLOW_MAINNET`       | no       | unset     | Set to `1` / `true` to allow gated MCP mutations and buys on mainnet without per-call `confirmMainnet`. |
+| `MINDVAULT_HTTP_TIMEOUT_MS`     | no       | `15000`   | Request deadline for the MindVault API and sponsored-account service. `0` disables.                     |
+| `MINDVAULT_HORIZON_TIMEOUT_MS`  | no       | `15000`   | Request deadline for Horizon balance/account reads. `0` disables.                                       |
+| `MINDVAULT_SOROBAN_TIMEOUT_MS`  | no       | `20000`   | Request deadline for Soroban RPC calls. `0` disables.                                                   |
+| `MINDVAULT_PAYMENT_TIMEOUT_MS`  | no       | `45000`   | Request deadline for x402 paid fetches, which include on-chain settlement. `0` disables.                |
+| `MINDVAULT_RETRY_ATTEMPTS`      | no       | `3`       | Total attempts (including the first) for idempotent MCP calls. `1` disables retrying.                   |
+| `MINDVAULT_RETRY_BASE_DELAY_MS` | no       | `250`     | Backoff delay before the first retry; doubles each attempt.                                             |
+| `MINDVAULT_RETRY_MAX_DELAY_MS`  | no       | `4000`    | Ceiling on the backoff delay before jitter is applied.                                                  |
 
-Timeouts are enforced with `AbortController`; see [`mcp-timeouts-retries.md`](./mcp-timeouts-retries.md) for budgets and tuning guidance.
+Timeouts are enforced with `AbortController`. Retries apply to idempotent calls only — catalog `GET`s, Horizon reads, and Soroban `getTransaction` — and never to x402 payments, which could settle twice. See [`mcp-timeouts-retries.md`](./mcp-timeouts-retries.md) for budgets, policy, and tuning guidance.
 
 On mainnet, MCP tools that mutate state or spend funds (`mindvault_buy`, `mindvault_publish`, `mindvault_register`, `mindvault_register_onchain`, `mindvault_setup_wallet`, `mindvault_reset`) require either `confirmMainnet: true` on the tool call or `MINDVAULT_ALLOW_MAINNET=1`. Read-only tools are unrestricted. See [`mainnet-deployment-checklist.md`](./mainnet-deployment-checklist.md#mcp-mainnet-guardrails).
 

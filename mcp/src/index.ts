@@ -57,6 +57,16 @@ import {
   type TimeoutService,
 } from "./httpTimeout.js";
 import {
+  describeRetryPolicy,
+  formatRetryLog,
+  isIdempotentMethod,
+  isRetryableStatus,
+  retryAfterDelay,
+  retryPolicyFromEnv,
+  withRetry,
+  type RetryAttemptInfo,
+} from "./retry.js";
+import {
   mapHttpError,
   mapRegistryError,
   mapTransportError,
@@ -114,9 +124,40 @@ const httpFetch: typeof fetch = MOCK
 // AbortController using one of these budgets; see docs/mcp-timeouts-retries.md.
 const TIMEOUTS = resolveTimeouts(process.env);
 
-/** Soroban RPC call under the soroban budget. */
-function sorobanRpcFetch(init: RequestInit): Promise<Response> {
-  return fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, init, "soroban", TIMEOUTS.soroban);
+// Bounded, jittered retry for idempotent calls only. Payments never use it.
+const RETRY_POLICY = retryPolicyFromEnv(process.env);
+
+/**
+ * Retry chatter goes to stderr so operators can see transient failures being
+ * absorbed. Silenced under Vitest to keep suite output readable —
+ * `formatRetryLog` is asserted directly in retry.test.ts.
+ */
+const logRetry = process.env.VITEST
+  ? undefined
+  : (info: RetryAttemptInfo) => console.error(`MindVault MCP: ${formatRetryLog(info)}`);
+
+/** Shared retry options for an idempotent HTTP call returning a Response. */
+function httpRetryOptions(label: string) {
+  return {
+    policy: RETRY_POLICY,
+    label,
+    shouldRetryResult: (res: Response) => isRetryableStatus(res.status),
+    describeResult: (res: Response) => `HTTP ${res.status}`,
+    delayFromResult: (res: Response) =>
+      retryAfterDelay(res.headers?.get?.("retry-after"), RETRY_POLICY),
+    onRetry: logRetry,
+  };
+}
+
+/**
+ * Soroban RPC call under the soroban budget. `getTransaction` is a read, so it
+ * is retried; the JSON-RPC method name is part of the log label.
+ */
+function sorobanRpcFetch(init: RequestInit, label: string): Promise<Response> {
+  return withRetry(
+    () => fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, init, "soroban", TIMEOUTS.soroban),
+    httpRetryOptions(label),
+  );
 }
 
 // ── State persistence ─────────────────────────────────────────────────────────
@@ -327,13 +368,19 @@ async function jsonFetch(
   let res: Response;
   try {
     const service = timeoutServiceForUrl(url);
-    res = await fetchWithTimeout(
-      httpFetch,
-      url,
-      { ...init, method, body: body ?? init?.body, headers },
-      service,
-      TIMEOUTS[service],
-    );
+    const call = () =>
+      fetchWithTimeout(
+        httpFetch,
+        url,
+        { ...init, method, body: body ?? init?.body, headers },
+        service,
+        TIMEOUTS[service],
+      );
+    // Only replay methods that are safe to replay. A POST here may create a
+    // resource or trigger a payment, so it is issued exactly once.
+    res = isIdempotentMethod(method)
+      ? await withRetry(call, httpRetryOptions(`${method} ${new URL(url).pathname}`))
+      : await call();
   } catch (err) {
     const source = sourceForUrl(url);
     throw mcpError(mapTransportError({ operation: SERVICE_OPERATION[source], source, error: err }));
@@ -407,12 +454,16 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
   // transport-error classification apply here as they do to every other call.
   let res: Response;
   try {
-    res = await fetchWithTimeout(
-      httpFetch,
-      `${HORIZON_URL}/accounts/${publicKey}`,
-      undefined,
-      "horizon",
-      TIMEOUTS.horizon,
+    res = await withRetry(
+      () =>
+        fetchWithTimeout(
+          httpFetch,
+          `${HORIZON_URL}/accounts/${publicKey}`,
+          undefined,
+          "horizon",
+          TIMEOUTS.horizon,
+        ),
+      httpRetryOptions("GET horizon /accounts"),
     );
   } catch (err) {
     throw mcpError(
@@ -518,12 +569,16 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
 async function getAccountBalances(
   publicKey: string,
 ): Promise<{ usdc: string; native: string; funded: boolean }> {
-  const res = await fetchWithTimeout(
-    httpFetch,
-    `${HORIZON_URL}/accounts/${publicKey}`,
-    undefined,
-    "horizon",
-    TIMEOUTS.horizon,
+  const res = await withRetry(
+    () =>
+      fetchWithTimeout(
+        httpFetch,
+        `${HORIZON_URL}/accounts/${publicKey}`,
+        undefined,
+        "horizon",
+        TIMEOUTS.horizon,
+      ),
+    httpRetryOptions("GET horizon /accounts"),
   );
   if (!res.ok) return { usdc: "0", native: "0", funded: false };
   const data: any = await res.json();
@@ -613,16 +668,19 @@ async function insufficientFundsMessage(
 export async function txStatus(txHash: string): Promise<string> {
   const hash = (txHash ?? "").trim();
   if (!hash) return "Provide a transaction hash to look up.";
-  const res = await sorobanRpcFetch({
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getTransaction",
-      params: { hash },
-    }),
-  });
+  const res = await sorobanRpcFetch(
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTransaction",
+        params: { hash },
+      }),
+    },
+    "POST soroban getTransaction",
+  );
   if (!res.ok)
     throwHttpError({
       operation: `Soroban RPC error: ${res.status}`,
@@ -1445,9 +1503,10 @@ export function networkProfile(): string {
     horizonUrl: HORIZON_URL,
     registryContractId: REGISTRY_CONTRACT_ID,
     usdcContractId,
-    // Active request deadlines, so an operator diagnosing slow or hanging tools
-    // can see the budgets in effect without reading the environment.
+    // Active request deadlines and retry policy, so an operator diagnosing slow,
+    // hanging, or flaky tools can see them without reading the environment.
     timeouts: describeTimeouts(TIMEOUTS),
+    retries: describeRetryPolicy(RETRY_POLICY),
     warnings,
   };
 
