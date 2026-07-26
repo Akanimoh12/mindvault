@@ -1389,6 +1389,29 @@ async function checkBindings(): Promise<string> {
   return result.message;
 }
 
+/**
+ * Return the current metrics snapshot as JSON. Only counts, durations, and tool
+ * names are included — never arguments, wallets, or API keys. When metrics are
+ * disabled, returns an actionable note instead of counters. Pass reset=true to
+ * clear counters after reading.
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snapshot.enabled) {
+    return JSON.stringify(
+      {
+        enabled: false,
+        message:
+          "Metrics are disabled. Set MINDVAULT_METRICS=1 (or true/yes/on) and restart the server to collect tool-level metrics.",
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(snapshot, null, 2);
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 const server = new Server({ name: "mindvault", version: "1.0.0" }, { capabilities: { tools: {} } });

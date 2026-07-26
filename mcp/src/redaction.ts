@@ -11,8 +11,6 @@
 const SECRET_PATTERNS = [
   // Stellar secret keys (S followed by 56 base32 characters)
   /S[A-Z2-7]{55}/g,
-  // Stripe-style / sk_live secrets
-  /\bsk_(?:live|test)_[A-Za-z0-9]+/gi,
   // Stripe-style / common sk_live / sk_test secrets
   /sk_(?:live|test)_[A-Za-z0-9]+/gi,
   // API keys (common patterns)
