@@ -47,9 +47,18 @@ pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 /// code, this const, and the docs fails a test.
 pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("register", "Resource"),
-    ("setprice", "PriceUpdated { id, old_price, new_price, updater }"),
-    ("updmeta", "MetadataUpdateEvent { id, old_metadata, new_metadata }"),
-    ("settags", "(prev_tags: Vec<String>, next_tags: Vec<String>)"),
+    (
+        "setprice",
+        "PriceUpdated { id, old_price, new_price, updater }",
+    ),
+    (
+        "updmeta",
+        "MetadataUpdateEvent { id, old_metadata, new_metadata }",
+    ),
+    (
+        "settags",
+        "(prev_tags: Vec<String>, next_tags: Vec<String>)",
+    ),
     ("transfer", "(previous_owner: Address, new_owner: Address)"),
     ("propose", "(owner: Address, proposed: Address)"),
     ("cancel", "owner: Address"),
@@ -177,11 +186,6 @@ pub enum Error {
     ReservedId = 15,
     PriceExceedsMax = 16,
     EmptyMetadata = 17,
-    EmptyMetadata = 13,
-    AlreadyOwner = 14,
-    NoPendingTransfer = 15,
-    ReservedId = 16,
-    PriceExceedsMax = 17,
     AdminNotSet = 18,
     NotVerifier = 19,
     InvalidVerificationTransition = 20,
@@ -447,7 +451,10 @@ impl VaultRegistry {
 
         env.storage().persistent().remove(&key);
 
-        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
+        env.events().publish(
+            (symbol_short!("transfer"), id),
+            (previous_owner, pending_owner),
+        );
 
         env.storage().persistent().remove(&key);
 
@@ -808,10 +815,7 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 
