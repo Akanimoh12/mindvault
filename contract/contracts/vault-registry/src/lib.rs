@@ -13,8 +13,8 @@
 extern crate alloc;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
-    String, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    IntoVal, String, Val, Vec,
 };
 
 // ~5s ledgers → 17,280 per day. Persistent entries are bumped ~30 days on each
@@ -30,6 +30,52 @@ const MAX_TAGS: u32 = 8;
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
 
+/// Stable registry name returned by [`VaultRegistry::registry_info`].
+pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
+/// Version of the on-chain `Resource` schema. Bump whenever a change to the
+/// `Resource` struct's fields would require callers to change how they decode
+/// it (e.g. the tags field added in schema version 2).
+pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
+
+/// Canonical list of every event topic this contract emits, paired with a
+/// human-readable description of its payload shape. This is the single
+/// source of truth for event schemas: `contract/README.md`'s Events table
+/// must list exactly these topics, and the contract must not emit any topic
+/// absent from this list. Both directions are enforced by tests in
+/// `test.rs` (`event_schema_matches_documented_readme_table` and
+/// `full_workflow_emits_exactly_the_documented_events`) so any drift between
+/// code, this const, and the docs fails a test.
+pub const EVENT_SCHEMA: &[(&str, &str)] = &[
+    ("register", "Resource"),
+    ("setprice", "PriceUpdated { id, old_price, new_price, updater }"),
+    ("updmeta", "MetadataUpdateEvent { id, old_metadata, new_metadata }"),
+    ("settags", "(prev_tags: Vec<String>, next_tags: Vec<String>)"),
+    ("transfer", "(previous_owner: Address, new_owner: Address)"),
+    ("propose", "(owner: Address, proposed: Address)"),
+    ("cancel", "owner: Address"),
+    ("setlisted", "(old_listed: bool, new_listed: bool)"),
+    ("setterms", "terms_hash: String"),
+    ("setadmin", "new_admin: Address"),
+    ("nomadmin", "new_admin: Address"),
+    ("accadmin", "new_admin: Address"),
+];
+
+/// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
+/// Lets a client discover the deployed registry's identity and shape with a
+/// single read-only call instead of hardcoding assumptions.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegistryInfo {
+    /// Stable, human-readable registry name (`REGISTRY_NAME`).
+    pub name: String,
+    /// Contract crate version (`CARGO_PKG_VERSION` at build time).
+    pub version: String,
+    /// Version of the on-chain `Resource` schema (`RESOURCE_SCHEMA_VERSION`).
+    pub resource_schema_version: u32,
+    /// Network passphrase digest of the ledger this contract is running on
+    /// (`env.ledger().network_id()`), so clients can confirm they are
+    /// talking to the network they expect without a hardcoded config value.
+    pub network_id: BytesN<32>,
 /// On-chain mirror of the server's off-chain verification result. Settable
 /// only by an address holding the verifier role (see `add_verifier`).
 #[contracttype]
@@ -124,6 +170,11 @@ pub enum Error {
     TermsHashTooLong = 10,
     InvalidResourceId = 11,
     InvalidMetadataPointer = 12,
+    AlreadyOwner = 13,
+    NoPendingTransfer = 14,
+    ReservedId = 15,
+    PriceExceedsMax = 16,
+    EmptyMetadata = 17,
     EmptyMetadata = 13,
     AlreadyOwner = 14,
     NoPendingTransfer = 15,
@@ -338,6 +389,7 @@ impl VaultRegistry {
         let previous_owner = resource.creator.clone();
         resource.creator = new_creator.clone();
         Self::save(&env, &resource);
+        Self::move_creator_index(&env, &previous_owner, &new_creator, &id);
 
         Self::remove_from_creator_index(&env, &previous_owner, &id);
         let prev_count = Self::creator_count(&env, &previous_owner);
@@ -389,6 +441,11 @@ impl VaultRegistry {
         let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
         Self::save(&env, &resource);
+        Self::move_creator_index(&env, &previous_owner, &pending_owner, &id);
+
+        env.storage().persistent().remove(&key);
+
+        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
 
         env.storage().persistent().remove(&key);
 
@@ -543,6 +600,13 @@ impl VaultRegistry {
         result
     }
 
+    /// Number of resources currently owned by `creator` (moves with
+    /// `transfer_ownership`/`accept_transfer`; unrelated to the monotonic,
+    /// never-decremented `count()`).
+    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
+        Self::creator_count(&env, &creator)
+    }
+
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
         Self::validate_resource_id(&id)?;
@@ -567,6 +631,17 @@ impl VaultRegistry {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
 
+    /// Discover this registry's stable identity and capabilities in one
+    /// read-only call: name, crate version, `Resource` schema version, and
+    /// the network this contract is deployed on. Always succeeds — there is
+    /// no failure mode a caller needs to handle.
+    pub fn registry_info(env: Env) -> RegistryInfo {
+        RegistryInfo {
+            name: String::from_str(&env, REGISTRY_NAME),
+            version: String::from_str(&env, env!("CARGO_PKG_VERSION")),
+            resource_schema_version: RESOURCE_SCHEMA_VERSION,
+            network_id: env.ledger().network_id(),
+        }
     /// Number of resources currently owned by `creator`. Reflects ownership
     /// transfers (unlike `count`, which is monotonic).
     pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
@@ -735,6 +810,12 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)
+    }
+
         env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
@@ -898,6 +979,19 @@ impl VaultRegistry {
             .persistent()
             .set(&Self::creator_key(env, creator), &out);
         Self::bump_persistent(env, &Self::creator_key(env, creator));
+    }
+
+    /// Move a resource id from `previous_owner`'s index/count to `new_owner`'s,
+    /// keeping `list_by_creator` and `creator_resource_count` in sync with
+    /// `Resource.creator` on every ownership change.
+    fn move_creator_index(env: &Env, previous_owner: &Address, new_owner: &Address, id: &String) {
+        Self::remove_from_creator_index(env, previous_owner, id);
+        let prev_count = Self::creator_count(env, previous_owner);
+        Self::set_creator_count(env, previous_owner, prev_count.saturating_sub(1));
+
+        Self::append_to_creator_index(env, new_owner, id.clone());
+        let new_count = Self::creator_count(env, new_owner);
+        Self::set_creator_count(env, new_owner, new_count + 1);
     }
 
     fn creator_count(env: &Env, creator: &Address) -> u32 {

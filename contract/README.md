@@ -15,6 +15,34 @@ reads the canonical resource entry here.
 
 ### Resource type
 
+| Function | Auth | Args | Returns | Description |
+|----------|------|------|---------|-------------|
+| `register(creator, id, price, metadata, tags)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2 (1–24 bytes); `price: i128` — USDC stroops (`> 0`, `<= MAX_PRICE`); `metadata: String` — pointer (max 512 bytes, non-empty, supported prefix); `tags: Vec<String>` — discovery labels (0–8 items) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
+| `set_price(id, new_price)` | `creator` | `id: String`; `new_price: i128` — USDC stroops (`> 0`, `<= MAX_PRICE`) | `Result<(), Error>` | Update the resource price. |
+| `update_metadata(id, metadata)` | `creator` | `id: String`; `metadata: String` — new pointer (max 512 bytes, non-empty, supported prefix) | `Result<(), Error>` | Update the metadata pointer. |
+| `set_tags(id, tags)` | `creator` | `id: String`; `tags: Vec<String>` — replacement discovery labels (0–8 items) | `Result<(), Error>` | Replace a resource's discovery tags. Does not touch `metadata`. |
+| `transfer_ownership(id, new_creator)` | `creator` | `id: String`; `new_creator: Address` | `Result<(), Error>` | Immediately transfer resource ownership. Clears any pending proposed transfer. |
+| `propose_transfer(id, new_creator)` | `creator` | `id: String`; `new_creator: Address` | `Result<(), Error>` | Propose a transfer that `new_creator` must accept. |
+| `accept_transfer(id)` | pending owner | `id: String` | `Result<(), Error>` | Accept a proposed transfer. Only the pending owner may call this. |
+| `cancel_transfer(id)` | `creator` | `id: String` | `Result<(), Error>` | Cancel a proposed transfer. |
+| `set_listed(id, listed)` | `creator` | `id: String`; `listed: bool` | `Result<(), Error>` | Set the listing state (`true` = listed, `false` = delisted). |
+| `delist(id)` | `creator` | `id: String` | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
+| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order (body only; prefer `list_page` for cursors). |
+| `list_page(cursor, limit)` | — | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20) | `CatalogPage` | Paginated page with `items` + `next_cursor` (`None` = end-of-list). |
+| `list_listed(start, limit)` | — | `start: u32`; `limit: u32` (capped at 20) | `Vec<Resource>` | Paginated list of **listed-only** resources. Delisted resources are skipped; relisted resources reappear. |
+| `list_by_creator(creator, start, limit)` | — | `creator: Address`; `start: u32`; `limit: u32` (capped at 20) | `Vec<Resource>` | Paginated list of resources currently owned by `creator`. |
+| `get(id)` | — | `id: String` | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
+| `exists(id)` | — | `id: String` | `bool` | Whether a resource is registered. |
+| `get_owner(id)` | — | `id: String` | `Result<Address, Error>` | Fetch the current owner of a resource. Errors `NotFound` if absent. |
+| `count()` | — | — | `u32` | Total resources successfully registered (monotonic; never decremented). |
+| `creator_resource_count(creator)` | — | `creator: Address` | `u32` | Resources currently owned by `creator` (moves with ownership transfer, unlike `count()`). |
+| `registry_info()` | — | — | `RegistryInfo` | Discover this registry's name, version, resource schema version, and network in one read-only call. Always succeeds. |
+| `admin()` | — | — | `Option<Address>` | Current contract admin address (`None` before any admin is set). |
+| `pending_admin()` | — | — | `Option<Address>` | Pending nominated contract admin address. |
+| `nominate_new_admin(new_admin)` | `admin` / `new_admin` | `new_admin: Address` | `Result<(), Error>` | Nominate a new contract admin. If no admin is set yet, this call bootstraps the initial admin directly (no accept step). |
+| `accept_admin(new_admin)` | `pending_admin` | `new_admin: Address` | `Result<(), Error>` | Accept a pending admin nomination and become contract admin. |
+| `set_terms_hash(creator, terms_hash)` | `creator` | `creator: Address`; `terms_hash: String` — max 64 bytes | `Result<(), Error>` | Store a hash of accepted marketplace terms for the creator. |
+| `get_terms_hash(creator)` | — | `creator: Address` | `Result<String, Error>` | Fetch a creator's marketplace terms hash. Errors `NotFound` if absent. |
 ```rust
 pub struct Resource {
     pub id: String,        // unique resource ID (1-24 lowercase letters/digits), matches server resource ID
@@ -101,6 +129,33 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `2` | `NotFound` | No resource (or terms hash) matches the given key. |
 | `3` | `InvalidPrice` | Price is `<= 0`. |
 | `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
+| `5` | `InvalidTag` | Tag format or count validation failed. |
+| `6` | `Unauthorized` | Caller authentication check failed or unauthorized. |
+| `7` | `PendingAdminNotSet` | No pending admin is set, or caller does not match the pending admin. |
+| `8` | `PendingAdminAlreadySet` | A pending admin nomination is already active. |
+| `9` | `SameAdmin` | Nominated new admin is already the current contract admin. |
+| `10` | `TermsHashTooLong` | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes). |
+| `11` | `InvalidResourceId` | Resource id is empty or exceeds 24 bytes. |
+| `12` | `InvalidMetadataPointer` | Metadata pointer does not start with a supported prefix. |
+| `13` | `AlreadyOwner` | Proposed/target new owner is already the current owner. |
+| `14` | `NoPendingTransfer` | No pending transfer exists for this resource. |
+| `15` | `ReservedId` | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
+| `16` | `PriceExceedsMax` | Price exceeds `MAX_PRICE`. |
+| `17` | `EmptyMetadata` | Metadata pointer is empty. |
+
+### Events
+
+All events use the topic `(symbol, id)` for resource-scoped actions, or
+`(symbol,)` (or `(symbol, address)`) for account-scoped actions (admin, terms).
+This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
+`src/lib.rs` — the `event_schema_matches_documented_readme_table` and
+`full_workflow_emits_exactly_the_documented_events` tests in `src/test.rs` fail
+if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
+apart, so update all three together.
+
+| Event | Payload | Triggered by |
+|-------|---------|-------------|
+| `register` | `Resource` (full resource record) | `register()` succeeds |
 | `5` | `InvalidTag` | Tag count exceeds 8, or a tag is empty / exceeds 32 bytes. |
 | `6` | `Unauthorized` | Reserved for general caller-authorization failures. |
 | `7` | `PendingAdminNotSet` | No pending admin nomination exists, or the caller doesn't match it. |
@@ -132,6 +187,42 @@ All events use the topic `(symbol, id)` (or `(symbol,)` for admin/no-id actions)
 | `updmeta` | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds |
 | `settags` | `(prev_tags: Vec<String>, next_tags: Vec<String>)` | `set_tags()` succeeds |
 | `transfer` | `(previous_owner: Address, new_owner: Address)` | `transfer_ownership()` or `accept_transfer()` succeeds |
+| `propose` | `(owner: Address, proposed: Address)` | `propose_transfer()` succeeds |
+| `cancel` | `owner: Address` | `cancel_transfer()` succeeds |
+| `setlisted` | `(old_listed: bool, new_listed: bool)` | `set_listed()` (and `delist()`) succeeds |
+| `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
+| `setadmin` | `new_admin: Address` | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin` | `new_admin: Address` | A subsequent `nominate_new_admin()` call succeeds |
+| `accadmin` | `new_admin: Address` | `accept_admin()` succeeds |
+
+The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
+listeners can determine the transition direction without querying additional state:
+
+| Transition | `(old, new)` |
+|------------|-------------|
+| Delist (was listed) | `(true, false)` |
+| Relist (was delisted) | `(false, true)` |
+| No-op relist | `(true, true)` |
+| No-op delist | `(false, false)` |
+
+Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
+event — `delist` is a thin convenience wrapper that calls `set_listed`. The event
+is emitted even when the new value equals the old value.
+
+The `updmeta` event carries structured data so that off-chain indexers can build
+a full audit trail without querying historical ledger state:
+
+```rust
+pub struct MetadataUpdateEvent {
+    pub id: String,           // the resource id
+    pub old_metadata: String, // metadata pointer before the update
+    pub new_metadata: String, // metadata pointer after the update
+}
+```
+
+The `settags` event emits both previous and next tags, enabling indexers
+to detect tag removals and reconcile state changes without requiring full history
+scans.
 | `propose` | `(current_owner: Address, proposed_owner: Address)` | `propose_transfer()` succeeds |
 | `cancel` | `owner: Address` | `cancel_transfer()` succeeds |
 | `setlisted` | `(old_listed: bool, new_listed: bool)` | `set_listed()` (and `delist()`) succeeds — emitted even on a no-op transition |
@@ -153,16 +244,76 @@ Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted` e
 `price` is an `i128` in **USDC stroops** (7 decimal places).
 Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
 
+### Resource type
+
+```rust
+pub struct Resource {
+    pub id: String,        // unique resource ID (1-24 bytes), matches server resource ID
+    pub creator: Address,  // current owner's Stellar address
+    pub price: i128,       // price in USDC stroops (7 decimals)
+    pub metadata: String,  // pointer (supported URI or content-hash form), max 512 bytes
+    pub listed: bool,      // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
+}
+```
+
+Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`,
+and content-hash prefixes such as `sha256:`, `sha-256:`, or `0x`.
+
+### Catalog page (cursor primitive)
+
+```rust
+pub struct CatalogPage {
+    pub items: Vec<Resource>,     // this page of resources (insertion order)
+    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
+}
+```
+
+Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
+recomputing offsets from `items.len()`. `list(start, limit)` remains available and
+returns only the `items` body for existing callers.
+
+### Registry info (discovery)
+
+```rust
+pub struct RegistryInfo {
+    pub name: String,                  // stable registry name ("mindvault-vault-registry")
+    pub version: String,               // contract crate version (Cargo.toml, CARGO_PKG_VERSION)
+    pub resource_schema_version: u32,  // version of the on-chain Resource schema
+    pub network_id: BytesN<32>,        // env.ledger().network_id() of the ledger this is deployed on
+}
+```
+
+`registry_info()` lets an agent/client discover which registry it's talking to —
+and confirm it's the network it expects — without hardcoding assumptions or a
+separate config lookup. It always succeeds; there is no error case.
+
 ### Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
+| `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
+| `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash in bytes. |
+| `MAX_PRICE` | `1_000_000_000_000_000_000` | Maximum price in USDC stroops (1 trillion USDC). |
+| `RESOURCE_SCHEMA_VERSION` | `2` | Current `Resource` schema version (tags added in v2). |
+| `REGISTRY_NAME` | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`. |
+
+### WASM Size Budget
+
+To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI.
+
+Currently, the limit is **10,240 bytes (10 KB)**.
 | `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer, in bytes. |
 | `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash, in bytes. |
 | `MAX_PRICE` | `10^18` | Maximum price, in USDC stroops. |
 
 ### WASM size budget
 
+### Breaking change: tags on `register` (v2)
+
+`register` now requires a fifth argument `tags: Vec<String>`. Existing callers must pass
+`[]` (empty tags) until they adopt labels. The `Resource` struct gains a `tags` field;
+`set_tags` updates tags without touching `metadata`.
 This contract enforces a strictly tracked optimized WASM size budget in CI
 (`stellar contract build --optimize`). Currently the limit is **28,672 bytes
 (28 KB)** — raised from a stale 10 KB figure that had already been exceeded
@@ -232,6 +383,16 @@ Set `VAULT_REGISTRY_CONTRACT_ID` and `SOROBAN_RPC_URL` in the server `.env`
 (see [`server/.env.example`](../server/.env.example)) so the backend can
 record/read resources on this contract.
 
+> [!NOTE]
+> This deployment predates `registry_info()`, `creator_resource_count()`,
+> `list_by_creator()`, and the two-step admin model. Redeploy and update this
+> table's Contract ID / Wasm Hash after shipping those changes to testnet.
+
+### Emergency pause
+
+See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
+for the architecture spike on admin pause/unpause. **v1 does not implement pause**
+(creator-scoped writes + off-chain ops are sufficient for the current trust model).
 > **Note:** the deployment above predates `tags`, the two-step admin/transfer
 > flows, `creator_resource_count`, terms hashes, the verifier role, the
 > on-chain verification mirror, metadata freezing, and index repair
