@@ -220,9 +220,15 @@ impl VaultRegistry {
         Self::validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        
+        // Capture previous tags before replacement for event emission
+        let prev_tags = resource.tags.clone();
         resource.tags = tags.clone();
         Self::save(&env, &resource);
-        env.events().publish((symbol_short!("settags"), id), tags);
+        
+        // Emit event with both previous and next tags for indexer reconciliation
+        env.events()
+            .publish((symbol_short!("settags"), id), (prev_tags, tags));
         Ok(())
     }
 

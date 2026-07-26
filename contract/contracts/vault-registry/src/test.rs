@@ -1508,6 +1508,121 @@ proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
     }
 }
 
+// ── Tag removal event semantics (#362) ──────────────────────────────────────
+
+#[test]
+fn set_tags_event_includes_prev_and_next() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "event-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with initial tags
+    let initial_tags = tags(&env, &["data", "research"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Replace with new tags
+    let new_tags = tags(&env, &["finance", "api"]);
+    client.set_tags(&id, &new_tags);
+    
+    // Verify event contains both prev and next tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    
+    // Event structure: (contract_address, topics_vec, data)
+    // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
+    let (_contract, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    // Decode topics: [symbol_short!("settags"), id]
+    assert_eq!(topics.len(), 2);
+    
+    // Decode data as tuple: (prev_tags, new_tags)
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    
+    assert_eq!(prev_tags.len(), 2);
+    assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
+    
+    assert_eq!(next_tags.len(), 2);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
+    assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "api"));
+}
+
+#[test]
+fn set_tags_event_supports_tag_removal() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "removal-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with multiple tags
+    let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Clear all tags
+    let empty = empty_tags(&env);
+    client.set_tags(&id, &empty);
+    
+    // Verify event shows previous tags and empty next tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 3);
+    assert_eq!(next_tags.len(), 0);
+}
+
+#[test]
+fn set_tags_event_supports_tag_addition() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "addition-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with no tags
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    
+    // Add tags
+    let new_tags = tags(&env, &["first", "second"]);
+    client.set_tags(&id, &new_tags);
+    
+    // Verify event shows empty previous and new tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 0);
+    assert_eq!(next_tags.len(), 2);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "first"));
+}
+
+#[test]
+fn set_tags_event_on_replacement() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "replace-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with initial tags
+    let initial_tags = tags(&env, &["old1", "old2"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Replace completely with different tags
+    let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
+    client.set_tags(&id, &replacement_tags);
+    
+    // Verify event shows complete replacement
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 2);
+    assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
+    
+    assert_eq!(next_tags.len(), 3);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "new1"));
+    assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "new2"));
+    assert_eq!(next_tags.get(2).unwrap(), String::from_str(&env, "new3"));
 #[test]
 fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();

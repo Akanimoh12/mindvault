@@ -66,6 +66,10 @@ pub struct MetadataUpdateEvent {
 }
 ```
 
+**Note:** The `settags` event emits both previous and next tags, enabling indexers
+to detect tag removals and reconcile state changes without requiring full history
+scans.
+
 ### Price units
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).  
@@ -80,6 +84,7 @@ pub struct Resource {
     pub price: i128,      // price in USDC stroops (7 decimals)
     pub metadata: String, // pointer (supported URI or content-hash form), max 512 bytes
     pub listed: bool,     // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 chars each)
     pub tags: Vec<String>,// discovery labels (e.g. "dataset", "research")
 }
 ```
