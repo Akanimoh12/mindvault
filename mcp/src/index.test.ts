@@ -429,8 +429,10 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
 
     const result = await buy("res-001");
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id", "res-001");
-    expect(parsed).toHaveProperty("title", "Introduction to Stellar");
+    // buy() reports a before/after diff so the agent can see what changed.
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 
   it("returns an insufficient-funds message when wallet balance is too low", async () => {
@@ -530,8 +532,9 @@ describe("buy – output shape for agent consumption", () => {
     // Output must be parseable JSON – agents rely on this.
     expect(() => JSON.parse(result)).not.toThrow();
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id");
-    expect(parsed).toHaveProperty("accessUrl");
+    expect(parsed).toHaveProperty("changedFields");
+    expect(parsed.after).toHaveProperty("id");
+    expect(parsed.after).toHaveProperty("accessUrl");
   });
 });
 
@@ -947,7 +950,6 @@ describe("wallet_info balance details", () => {
     await expect(walletInfo()).rejects.toThrow("Horizon error 500");
   });
 });
-
 
 // ── networkProfile (#412) ───────────────────────────────────────────────────
 

@@ -182,8 +182,7 @@ function normalizePersisted(raw: unknown): ProfileState {
     profiles[name] = profile;
   }
   const requested = typeof obj.activeProfile === "string" ? obj.activeProfile : "default";
-  const activeProfile =
-    (requested in profiles ? requested : Object.keys(profiles)[0]) ?? "default";
+  const activeProfile = (requested in profiles ? requested : Object.keys(profiles)[0]) ?? "default";
   return { version: STATE_VERSION, activeProfile, profiles };
 }
 
@@ -199,4 +198,3 @@ export function persistState(state: ProfileState): void {
     throw new StateBackupError(`Failed to persist restored state: ${err}`);
   }
 }
-
