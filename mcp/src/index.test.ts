@@ -54,6 +54,7 @@ import {
   walletInfo,
   useProfile,
   listProfiles,
+  networkProfile,
   _setAgentWallet,
   _setAgentApiKey,
   _resetProfiles,
@@ -808,7 +809,11 @@ describe("multi-wallet profiles", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       Promise.resolve(
         mockResponse({
-          balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "12.5" }],
+          subentry_count: 2,
+          balances: [
+            { asset_type: "native", balance: "100.0000000" },
+            { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "12.5" },
+          ],
         }),
       ),
     );
@@ -816,7 +821,194 @@ describe("multi-wallet profiles", () => {
     const result = await walletInfo();
     expect(result).toContain("Profile: mainnet");
     expect(result).toContain("Address: GAAA");
+    expect(result).toContain("XLM Balance: 100.0000000");
+    expect(result).toContain("XLM Reserved: 1.5"); // 0.5 base + 2 * 0.5
+    expect(result).toContain("XLM Available: 98.5000000");
     expect(result).toContain("USDC Balance: 12.5");
+    expect(result).toContain("USDC Status: funded");
     expect(result).toContain("Publisher registered: yes");
+  });
+});
+
+describe("wallet_info balance details", () => {
+  beforeEach(() => {
+    _resetProfiles();
+    _setAgentWallet(testWallet);
+  });
+
+  afterEach(() => {
+    _resetProfiles();
+    vi.restoreAllMocks();
+  });
+
+  it("distinguishes missing account (404 from Horizon)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({}, false, 404));
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Balance: 0");
+    expect(result).toContain("USDC Balance: 0");
+    expect(result).toContain("USDC Status: missing");
+    expect(result).toContain("Note: Account");
+    expect(result).toContain("does not exist");
+  });
+
+  it("distinguishes missing USDC trustline (account exists, no USDC)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        subentry_count: 0,
+        balances: [{ asset_type: "native", balance: "10.0000000" }],
+      }),
+    );
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Balance: 10.0000000");
+    expect(result).toContain("XLM Reserved: 0.5");
+    expect(result).toContain("XLM Available: 9.5000000");
+    expect(result).toContain("USDC Balance: 0");
+    expect(result).toContain("USDC Status: no-trustline");
+    expect(result).toContain("Note: USDC trustline not found");
+  });
+
+  it("distinguishes zero USDC balance (trustline exists with 0 balance)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        subentry_count: 1,
+        balances: [
+          { asset_type: "native", balance: "5.0000000" },
+          { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "0.0000000" },
+        ],
+      }),
+    );
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Balance: 5.0000000");
+    expect(result).toContain("XLM Reserved: 1.0"); // 0.5 base + 1 * 0.5
+    expect(result).toContain("XLM Available: 4.0000000");
+    expect(result).toContain("USDC Balance: 0.0000000");
+    expect(result).toContain("USDC Status: zero");
+    expect(result).toContain("Note: USDC balance is zero");
+  });
+
+  it("reports funded status when USDC balance is positive", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        subentry_count: 1,
+        balances: [
+          { asset_type: "native", balance: "50.1234567" },
+          { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "99.9999999" },
+        ],
+      }),
+    );
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Balance: 50.1234567");
+    expect(result).toContain("XLM Reserved: 1.0");
+    expect(result).toContain("XLM Available: 49.1234567");
+    expect(result).toContain("USDC Balance: 99.9999999");
+    expect(result).toContain("USDC Status: funded");
+    expect(result).not.toContain("Note:");
+  });
+
+  it("calculates XLM reserve with multiple subentries", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        subentry_count: 5, // 5 trustlines/offers/signers
+        balances: [
+          { asset_type: "native", balance: "20.0000000" },
+          { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "10.0" },
+        ],
+      }),
+    );
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Reserved: 3.0"); // 0.5 base + 5 * 0.5
+    expect(result).toContain("XLM Available: 17.0000000"); // 20 - 3
+  });
+
+  it("reports zero XLM available when balance equals reserve", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        subentry_count: 1,
+        balances: [
+          { asset_type: "native", balance: "1.0000000" }, // exactly the reserve
+          { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "5.0" },
+        ],
+      }),
+    );
+
+    const result = await walletInfo();
+    expect(result).toContain("XLM Reserved: 1.0");
+    expect(result).toContain("XLM Available: 0.0000000");
+  });
+
+  it("throws on Horizon error (non-404)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ error: "bad" }, false, 500));
+
+    await expect(walletInfo()).rejects.toThrow("Horizon error 500");
+  });
+});
+
+
+// ── networkProfile (#412) ───────────────────────────────────────────────────
+
+describe("networkProfile", () => {
+  it("returns all expected fields in deterministic JSON format", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed).toHaveProperty("stellarNetwork");
+    expect(parsed).toHaveProperty("x402Network");
+    expect(parsed).toHaveProperty("sorobanRpcUrl");
+    expect(parsed).toHaveProperty("horizonUrl");
+    expect(parsed).toHaveProperty("registryContractId");
+    expect(parsed).toHaveProperty("usdcContractId");
+    expect(parsed).toHaveProperty("warnings");
+    expect(Array.isArray(parsed.warnings)).toBe(true);
+  });
+
+  it("reports testnet as stellarNetwork in test environment", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed.stellarNetwork).toBe("testnet");
+  });
+
+  it("includes expected testnet preset values", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    // Test environment uses testnet presets (from mocked registry-client)
+    expect(parsed.sorobanRpcUrl).toBeTruthy();
+    expect(parsed.horizonUrl).toBeTruthy();
+    expect(parsed.registryContractId).toBeTruthy();
+    expect(parsed.usdcContractId).toBeTruthy();
+  });
+
+  it("returns empty warnings array when no env overrides present", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    // In default test environment with no custom env vars
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("produces valid JSON that can be parsed", () => {
+    const result = networkProfile();
+    expect(() => JSON.parse(result)).not.toThrow();
+  });
+
+  it("formats output with indentation for readability", () => {
+    const result = networkProfile();
+    // JSON.stringify with null, 2 produces indented output
+    expect(result).toContain("\n");
+    expect(result).toMatch(/{\s+"stellarNetwork":/);
+  });
+
+  it("includes x402Network field with valid network identifier", () => {
+    const result = networkProfile();
+    const parsed = JSON.parse(result);
+
+    expect(parsed.x402Network).toBeTruthy();
+    expect(typeof parsed.x402Network).toBe("string");
   });
 });

@@ -11,7 +11,6 @@ import {
   networks as registryNetworks,
   normalizeX402Network,
   resolveStellarNetwork,
-  validateNetworkConfig,
   X402_NETWORK_IDS,
   type Resource,
 } from "@mindvault/registry-client";
@@ -24,27 +23,56 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+import { cacheStalenessNotice } from "./cacheStaleness.js";
+import {
+  collectStartupDiagnostics,
+  formatDiagnostics,
+  hasBlockingDiagnostics,
+} from "./diagnostics.js";
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
+import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
+import {
+  DEFAULT_PROFILE,
+  isValidProfileName,
+  migrateState,
+  STATE_VERSION,
+  type AgentWallet,
+  type ProfileState,
+  type WalletProfile,
+} from "./profiles.js";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  type WalletProfile,
+  type AgentWallet,
+  type ProfileState,
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+} from "./profiles.js";
+import { exportState, restoreState } from "./stateBackup.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const STELLAR_NETWORK = resolveStellarNetwork(process.env.STELLAR_NETWORK);
 const networkPreset = registryNetworks[STELLAR_NETWORK];
 
-const networkIssues = validateNetworkConfig({
-  stellarNetwork: STELLAR_NETWORK,
-  x402Network: process.env.NETWORK ?? networkPreset.x402Network,
-  sorobanRpcUrl: process.env.SOROBAN_RPC_URL ?? networkPreset.sorobanRpcUrl,
-  horizonUrl: process.env.HORIZON_URL ?? networkPreset.horizonUrl,
-  usdcSacContractId: process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId,
-  registryContractId:
-    process.env.VAULT_REGISTRY_CONTRACT_ID ?? networkPreset.defaultRegistryContractId ?? undefined,
-});
-
-if (networkIssues.length > 0) {
-  const details = networkIssues.map((i) => `${i.field}: ${i.message}`).join("\n");
-  console.error(`MindVault MCP: inconsistent network configuration:\n${details}`);
-  process.exit(1);
+// Startup diagnostics: collect every configuration problem in one pass so the
+// operator sees the full list (with exact variable names and expected values)
+// instead of fixing them one failed launch at a time. Warnings are printed but
+// non-fatal; any error stops the server. Skipped under tests and in mock mode
+// so unit runs and offline local development never exit the process.
+if (!process.env.VITEST && !mockEnabledFromEnv(process.env)) {
+  const diagnostics = collectStartupDiagnostics(process.env);
+  if (diagnostics.length > 0) console.error(formatDiagnostics(diagnostics));
+  if (hasBlockingDiagnostics(diagnostics)) process.exit(1);
 }
 
 const BASE_URL = process.env.MINDVAULT_URL ?? "https://mindvault-hyr3.onrender.com";
@@ -60,16 +88,30 @@ const NETWORK: X402Network = normalizeX402Network(
   process.env.NETWORK ?? networkPreset.x402Network,
 ) as X402Network;
 
-if (!REGISTRY_CONTRACT_ID) {
-  console.error(
-    "MindVault MCP: VAULT_REGISTRY_CONTRACT_ID is required for mainnet. Deploy vault-registry and set the contract ID.",
-  );
-  process.exit(1);
-}
-
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
+
+/** Snapshot (and optionally reset) opt-in tool metrics. Never includes secrets. */
+function toolMetrics(reset: boolean): string {
+  const snap = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snap.enabled) {
+    return "Metrics disabled. Set MINDVAULT_METRICS=1 on the server to enable.";
+  }
+  return JSON.stringify(snap, null, 2);
+}
+// Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
+// call and the on-chain registry lookup are served from deterministic in-memory
+// fixtures — no live backend, funded wallet, or network access required. All
+// outbound requests go through `httpFetch`, which is the mock shim in this mode
+// and the global fetch otherwise.
+const MOCK = mockEnabledFromEnv(process.env);
+// In real mode, defer to the global `fetch` at call time (not a captured
+// reference) so a test-stubbed global is still honoured.
+const httpFetch: typeof fetch = MOCK
+  ? createMockFetch()
+  : (input, init) => fetch(input as RequestInfo | URL, init);
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
@@ -111,6 +153,30 @@ export function _setAgentApiKey(k: string | null): void {
 export function _resetProfiles(): void {
   profiles = {};
   activeProfileName = DEFAULT_PROFILE;
+}
+
+/** Apply a restored ProfileState into memory and re-persist (mode 0600). */
+function applyRestoredState(state: ProfileState): void {
+  profiles = state.profiles;
+  activeProfileName = state.activeProfile;
+  saveState();
+}
+
+/** Export encrypted state backup (passphrase-gated). No plaintext secrets in output. */
+export function backupState(passphrase: string): string {
+  const blob = exportState(passphrase);
+  return [
+    "Encrypted state backup ready. Copy the blob below to the new environment.",
+    "Restore with mindvault_restore_state using the same passphrase.",
+    "The blob does not contain plaintext secrets.",
+    "",
+    blob,
+  ].join("\n");
+}
+
+/** Restore state from an encrypted backup. Integrity-checked before any write. */
+export function restoreStateTool(blob: string, passphrase: string): string {
+  return restoreState(blob, passphrase, applyRestoredState);
 }
 
 function loadState(): void {
@@ -193,7 +259,7 @@ loadState();
 async function jsonFetch(
   url: string,
   init?: RequestInit,
-): Promise<{ ok: boolean; status: number; data: any }> {
+): Promise<{ ok: boolean; status: number; data: any; headers: Record<string, string> }> {
   const method = (init?.method ?? "GET").toUpperCase();
   const body =
     typeof init?.body === "string" ? init.body : init?.body ? JSON.stringify(init.body) : undefined;
@@ -203,17 +269,21 @@ async function jsonFetch(
   };
   const headers = signMutatingHeaders(url, method, baseHeaders, body);
 
-  const res = await fetch(url, {
+  const res = await httpFetch(url, {
     ...init,
     method,
     body: body ?? init?.body,
     headers,
   });
+  const responseHeaders: Record<string, string> = {};
+  res.headers.forEach((value, key) => {
+    responseHeaders[key.toLowerCase()] = value;
+  });
   const text = await res.text();
   try {
-    return { ok: res.ok, status: res.status, data: JSON.parse(text) };
+    return { ok: res.ok, status: res.status, data: JSON.parse(text), headers: responseHeaders };
   } catch {
-    return { ok: res.ok, status: res.status, data: text };
+    return { ok: res.ok, status: res.status, data: text, headers: responseHeaders };
   }
 }
 
@@ -241,17 +311,132 @@ function makePaidFetch(wallet: AgentWallet) {
   const signer = createEd25519Signer(wallet.secretKey, NETWORK);
   const scheme = new ExactStellarScheme(signer);
   const client = new x402Client().register(NETWORK, scheme);
-  return wrapFetchWithPayment(fetch, client);
+  return wrapFetchWithPayment(httpFetch, client);
+}
+
+/**
+ * Account/balance states the tool can distinguish for agent-facing output:
+ * - missing: account does not exist on Stellar (never funded)
+ * - no-trustline: account exists but has no USDC trustline
+ * - zero: USDC trustline exists with 0 balance
+ * - funded: USDC trustline exists with a positive balance
+ */
+interface BalanceDetails {
+  status: "missing" | "no-trustline" | "zero" | "funded";
+  xlmBalance: string;
+  xlmReserve: string;
+  xlmAvailable: string;
+  usdcBalance: string;
+  /** Human-readable diagnostic when the account/trustline is not usable. */
+  message?: string;
+}
+
+/**
+ * Query Horizon for the agent wallet's XLM and USDC balances, distinguishing
+ * missing account, missing trustline, and zero balance states for deterministic
+ * agent-facing output.
+ */
+async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
+  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
+
+  // Account does not exist (never funded with XLM).
+  if (res.status === 404) {
+    return {
+      status: "missing",
+      xlmBalance: "0",
+      xlmReserve: "0",
+      xlmAvailable: "0",
+      usdcBalance: "0",
+      message: `Account ${publicKey} does not exist. Fund it with at least 1 XLM to activate.`,
+    };
+  }
+
+  if (!res.ok) {
+    throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
+  }
+
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+
+  // Find native XLM balance.
+  const xlmBalance = balances.find((b: any) => b.asset_type === "native");
+  const xlm = xlmBalance?.balance ?? "0";
+
+  // Stellar reserves 0.5 XLM base + 0.5 XLM per entry (trustlines, offers, signers, data).
+  // Compute available = balance - reserve so agents know how much XLM they can spend.
+  const subentryCount = data.subentry_count ?? 0;
+  const baseReserve = 0.5; // Stellar base reserve per account
+  const entryReserve = 0.5; // Reserve per subentry
+  const reserve = baseReserve + subentryCount * entryReserve;
+  const available = Math.max(0, parseFloat(xlm) - reserve);
+
+  // Find USDC trustline.
+  const usdcBalance = balances.find(
+    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
+  );
+
+  if (!usdcBalance) {
+    return {
+      status: "no-trustline",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: "0",
+      message: `USDC trustline not found. Add a USDC trustline to receive payments.`,
+    };
+  }
+
+  const usdc = usdcBalance.balance ?? "0";
+  const usdcFloat = parseFloat(usdc);
+
+  if (usdcFloat === 0) {
+    return {
+      status: "zero",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: usdc,
+      message: `USDC balance is zero. Fund the account to use x402 payments.`,
+    };
+  }
+
+  return {
+    status: "funded",
+    xlmBalance: xlm,
+    xlmReserve: reserve.toFixed(1),
+    xlmAvailable: available.toFixed(7),
+    usdcBalance: usdc,
+  };
+}
+
+/**
+ * Legacy helper — returns USDC balance as a string, defaulting to "0" for
+ * missing account or trustline. Preserved for backward compatibility with
+ * insufficientFundsMessage() and other call sites. New code should use
+ * getBalanceDetails() for richer diagnostics.
+ */
+async function getUsdcBalance(publicKey: string): Promise<string> {
+  try {
+    const details = await getBalanceDetails(publicKey);
+    return details.usdcBalance;
+  } catch {
+    return "0";
+  }
+/** Fetch an account's USDC and native (XLM) balances from Horizon. */
+async function getAccountBalances(
+  publicKey: string,
+): Promise<{ usdc: string; native: string; funded: boolean }> {
+  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  if (!res.ok) return { usdc: "0", native: "0", funded: false };
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
+  const native = balances.find((b) => b.asset_type === "native");
+  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
 }
 
 async function getUsdcBalance(publicKey: string): Promise<string> {
-  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
-  if (!res.ok) return "0";
-  const data: any = await res.json();
-  const b = (data.balances ?? []).find(
-    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
-  );
-  return b?.balance ?? "0";
+  return (await getAccountBalances(publicKey)).usdc;
 }
 
 function formatResource(r: any): string {
@@ -334,7 +519,7 @@ async function insufficientFundsMessage(
 export async function txStatus(txHash: string): Promise<string> {
   const hash = (txHash ?? "").trim();
   if (!hash) return "Provide a transaction hash to look up.";
-  const res = await fetch(SOROBAN_RPC_URL, {
+  const res = await httpFetch(SOROBAN_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -398,13 +583,24 @@ async function setupWallet(profileArg?: string): Promise<string> {
 
 export async function walletInfo(): Promise<string> {
   const wallet = requireWallet();
-  const balance = await getUsdcBalance(wallet.publicKey);
-  return [
+  const details = await getBalanceDetails(wallet.publicKey);
+
+  const lines = [
     `Profile: ${activeProfileName}`,
     `Address: ${wallet.publicKey}`,
-    `USDC Balance: ${balance}`,
+    `XLM Balance: ${details.xlmBalance}`,
+    `XLM Reserved: ${details.xlmReserve} (base + subentries)`,
+    `XLM Available: ${details.xlmAvailable}`,
+    `USDC Balance: ${details.usdcBalance}`,
+    `USDC Status: ${details.status}`,
     `Publisher registered: ${currentApiKey() ? "yes" : "no"}`,
-  ].join("\n");
+  ];
+
+  if (details.message) {
+    lines.push(`Note: ${details.message}`);
+  }
+
+  return lines.join("\n");
 }
 
 /** Switch the active profile, creating it if new. */
@@ -447,8 +643,12 @@ export async function browse(): Promise<string> {
   const res = await jsonFetch(`${BASE_URL}/resources`);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
   const items: any[] = res.data;
-  if (items.length === 0) return "No resources listed yet.";
-  return items.map(formatResource).join("\n\n");
+  const body =
+    items.length === 0 ? "No resources listed yet." : items.map(formatResource).join("\n\n");
+  // Warn when the catalog may be stale relative to the on-chain registry, based
+  // on the server's cache headers. Silent when there is no cache metadata.
+  const notice = cacheStalenessNotice(res.headers);
+  return notice ? `${body}\n\n${notice}` : body;
 }
 
 export async function search(filtersOrQuery: string | SearchFilters): Promise<string> {
@@ -759,6 +959,7 @@ function stroopsToUsdc(stroops: bigint): string {
 }
 
 async function registryLookup(resourceId: string): Promise<string> {
+  if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -834,14 +1035,83 @@ function registryInfo(): string {
     contractId: string;
     networkPassphrase: string;
     rpcUrl: string;
+    network: string;
+    x402Network: string;
     resourceFields: (keyof Resource)[];
+    mainnetDiagnostics: string;
   } = {
     contractId: REGISTRY_CONTRACT_ID,
     networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
     rpcUrl: SOROBAN_RPC_URL,
+    network: STELLAR_NETWORK,
+    x402Network: NETWORK,
     resourceFields: ["id", "creator", "price", "metadata", "listed"],
+    mainnetDiagnostics: formatMainnetDiagnostics({
+      stellarNetwork: STELLAR_NETWORK,
+      x402Network: NETWORK,
+      registryContractId: REGISTRY_CONTRACT_ID,
+      allowMainnetEnv: mainnetAllowedFromEnv(),
+    }),
   };
   return JSON.stringify(info, null, 2);
+}
+
+/**
+ * Report the current Stellar and x402 network configuration in use by this MCP
+ * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
+ * USDC contract IDs, and warnings for environment variable overrides that
+ * diverge from presets.
+ */
+export function networkProfile(): string {
+  const warnings: string[] = [];
+
+  // Detect custom overrides that differ from the preset
+  const usdcContractId = process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId;
+  if (process.env.USDC_CONTRACT_ID && process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId) {
+    warnings.push(`USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`);
+  }
+  if (process.env.SOROBAN_RPC_URL && process.env.SOROBAN_RPC_URL !== networkPreset.sorobanRpcUrl) {
+    warnings.push(`SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`);
+  }
+  if (process.env.HORIZON_URL && process.env.HORIZON_URL !== networkPreset.horizonUrl) {
+    warnings.push(`HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`);
+  }
+  if (
+    process.env.VAULT_REGISTRY_CONTRACT_ID &&
+    networkPreset.defaultRegistryContractId &&
+    process.env.VAULT_REGISTRY_CONTRACT_ID !== networkPreset.defaultRegistryContractId
+  ) {
+    warnings.push(
+      `VAULT_REGISTRY_CONTRACT_ID overrides preset (${networkPreset.defaultRegistryContractId} → ${process.env.VAULT_REGISTRY_CONTRACT_ID})`,
+    );
+  }
+  if (process.env.NETWORK && process.env.NETWORK !== networkPreset.x402Network) {
+    warnings.push(`NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`);
+  }
+
+  const profile = {
+    stellarNetwork: STELLAR_NETWORK,
+    x402Network: NETWORK,
+    sorobanRpcUrl: SOROBAN_RPC_URL,
+    horizonUrl: HORIZON_URL,
+    registryContractId: REGISTRY_CONTRACT_ID,
+    usdcContractId,
+    warnings,
+  };
+
+  return JSON.stringify(profile, null, 2);
+}
+
+/**
+ * Return opt-in tool-level metrics: per-tool call/error counts and durations,
+ * plus payment attempt/failure totals. Output is always safe for agent
+ * consumption (contains only tool names, counts, and durations — never
+ * arguments, wallets, or API keys).
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset && metrics.enabled) metrics.reset();
+  return JSON.stringify(snapshot, null, 2);
 }
 
 /**
@@ -851,6 +1121,7 @@ function registryInfo(): string {
  * note when the contract/RPC is unreachable).
  */
 async function checkBindings(): Promise<string> {
+  if (MOCK) return "Mock mode: contract binding check skipped (no live RPC).";
   const result = await checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -858,6 +1129,29 @@ async function checkBindings(): Promise<string> {
     network: STELLAR_NETWORK,
   });
   return result.message;
+}
+
+/**
+ * Return the current metrics snapshot as JSON. Only counts, durations, and tool
+ * names are included — never arguments, wallets, or API keys. When metrics are
+ * disabled, returns an actionable note instead of counters. Pass reset=true to
+ * clear counters after reading.
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset) metrics.reset();
+  if (!snapshot.enabled) {
+    return JSON.stringify(
+      {
+        enabled: false,
+        message:
+          "Metrics are disabled. Set MINDVAULT_METRICS=1 (or true/yes/on) and restart the server to collect tool-level metrics.",
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(snapshot, null, 2);
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
@@ -876,7 +1170,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           profile: {
             type: "string",
             description:
-              "Optional profile name to create/switch to (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Optional profile name to create/switch to. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'testnet', 'mainnet-publisher', 'buyer.alice'",
+            examples: ["testnet", "mainnet-publisher", "buyer.alice"],
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
         },
         required: [],
@@ -898,7 +1198,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: {
             type: "string",
             description:
-              "Profile name to make active (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Profile name to make active. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'mainnet', 'testnet-buyer', 'publisher.bob'",
+            examples: ["mainnet", "testnet-buyer", "publisher.bob"],
           },
         },
         required: ["name"],
@@ -924,19 +1225,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           query: {
             type: "string",
-            description: "Keyword(s) to match against resource title or description.",
+            description:
+              "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
+            examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
           },
-          minPrice: { type: "string", description: "Minimum USDC price to include." },
-          maxPrice: { type: "string", description: "Maximum USDC price to include." },
+          minPrice: {
+            type: "string",
+            description:
+              "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
+            examples: ["5.00", "10.50", "0.50"],
+          },
+          maxPrice: {
+            type: "string",
+            description:
+              "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
+            examples: ["20.00", "15.99", "100.00"],
+          },
           verificationStatus: {
             type: "string",
             enum: ["pending", "verified", "rejected", "skipped"],
-            description: "Filter by verification status.",
+            description:
+              "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
+            examples: ["verified"],
           },
           resourceType: {
             type: "string",
             enum: ["file", "link"],
-            description: "Filter by resource type.",
+            description:
+              "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
+            examples: ["link", "file"],
           },
         },
         required: ["query"],
@@ -944,10 +1261,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_preview",
-      description: "Get details and price for a specific resource.",
+      description:
+        "Get details and price for a specific resource before purchasing. Returns title, description, price, type, verification status, and access URL.",
       inputSchema: {
         type: "object",
-        properties: { resourceId: { type: "string" } },
+        properties: {
+          resourceId: {
+            type: "string",
+            description:
+              "The unique resource identifier from mindvault_browse or mindvault_search. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
+          },
+        },
         required: ["resourceId"],
       },
     },
@@ -961,6 +1286,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: "string" },
           email: { type: "string" },
           walletAddress: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+
         },
         required: ["name", "email"],
       },
@@ -968,7 +1299,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_publish",
       description:
-        "Publish a link resource. Agent wallet signs the x402 verification payment on-chain.",
+        "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
       inputSchema: {
         type: "object",
         properties: {
@@ -976,29 +1307,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           description: { type: "string" },
           price: { type: "string" },
           externalUrl: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+
         },
         required: ["title", "price", "externalUrl"],
       },
     },
     {
       name: "mindvault_buy",
-      description: "Pay USDC via x402 and access a resource.",
+      description: "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
       inputSchema: {
         type: "object",
-        properties: { resourceId: { type: "string" } },
+        properties: {
+          resourceId: { type: "string" },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+          },
+        },
         required: ["resourceId"],
       },
     },
     {
       name: "mindvault_register_onchain",
       description:
-        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet, submits it, and returns the registry status and on-chain tx hash.",
+        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet (which must be the resource creator), submits it, and returns the registry status and on-chain tx hash.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The id of the resource to register on-chain (from mindvault_publish).",
+            description:
+              "The resource ID to register on-chain (from mindvault_publish output). Must be verified and not already registered. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
         },
         required: ["resourceId"],
@@ -1006,13 +1357,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_agent_status",
-      description: "Check the verification agent's earnings and activity.",
+      description:
+        "Check the verification agent's earnings and activity. Returns total verifications, pass/fail counts, total USDC earned, average confidence score, and recent verification history with resource titles.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
       name: "mindvault_registry_info",
       description:
-        "Return the on-chain vault-registry contract ID and network so you can query ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
+        "Return the on-chain vault-registry contract ID, network passphrase, RPC URL, and the resource fields available for direct Soroban queries. Use this to verify ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
+      name: "mindvault_network_profile",
+      description:
+        "Report current Stellar/x402 network configuration (testnet/mainnet), RPC URLs, registry contract ID, and warnings for custom overrides. Use this to verify which network the MCP is connected to and diagnose configuration issues.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
@@ -1024,13 +1382,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_registry_lookup",
       description:
-        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator, price (USDC), metadata, listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
+        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator wallet address, price (USDC), metadata (title/description), listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The resource ID to look up on-chain.",
+            description:
+              "The resource ID to look up on-chain. Must be a registered resource. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
           },
         },
         required: ["resourceId"],
@@ -1039,10 +1399,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_tx_status",
       description:
-        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger details and XDR.",
+        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
       inputSchema: {
         type: "object",
-        properties: { txHash: { type: "string" } },
+        properties: {
+          txHash: {
+            type: "string",
+            description:
+              "The 64-character hex transaction hash from Stellar. Example: 'abc123def456...' (from mindvault_register_onchain or mindvault_publish output).",
+            examples: [
+              "abc123def456789012345678901234567890123456789012345678901234",
+              "f47ac10b58cc4372a5670e02b2c3d479c3e5d0a1b2c3d4e5f6a7b8c9d0e1f2a3",
+            ],
+          },
+        },
         required: ["txHash"],
       },
     },
@@ -1055,10 +1425,51 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           all: {
             type: "boolean",
-            description: "Clear every profile and delete the state file (default: active only).",
+            description:
+              "Clear every profile and delete the state file (default: false clears active profile only). Example: true removes all profiles.",
+            examples: [true, false],
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
           },
         },
         required: [],
+      },
+    },
+    {
+      name: "mindvault_backup_state",
+      description:
+        "Export an encrypted backup of ~/.mindvault/state.json for moving agent environments. Requires a passphrase (min 8 chars). Output is a self-contained ciphertext blob — wallet secret keys and API keys never appear in plaintext. Restore with mindvault_restore_state using the same passphrase. Does not change reset behavior.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          passphrase: {
+            type: "string",
+            description: "Passphrase used to encrypt the backup (min 8 characters). Keep it offline.",
+          },
+        },
+        required: ["passphrase"],
+      },
+    },
+    {
+      name: "mindvault_restore_state",
+      description:
+        "Restore ~/.mindvault/state.json from an encrypted backup produced by mindvault_backup_state. Validates integrity (wrong passphrase or tampered data fails before any write). Replaces in-memory profiles and re-persists to disk (mode 0600). Existing reset behavior is unchanged.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          blob: {
+            type: "string",
+            description: "Encrypted backup blob from mindvault_backup_state (v1:… format).",
+          },
+          passphrase: {
+            type: "string",
+            description: "Passphrase used when the backup was created (min 8 characters).",
+          },
+        },
+        required: ["blob", "passphrase"],
       },
     },
     {
@@ -1071,7 +1482,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reset: {
             type: "boolean",
             description:
-              "Clear all counters after returning the current snapshot (default: false).",
+              "Clear all counters after returning the current snapshot (default: false leaves counters intact). Example: true resets metrics after reading.",
+            examples: [true, false],
           },
         },
         required: [],
@@ -1081,11 +1493,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 async function dispatchTool(name: string, args: any): Promise<string> {
+  assertMainnetMutationAllowed(STELLAR_NETWORK, name, args ?? {});
   switch (name) {
     case "mindvault_setup_wallet":
-      return setupWallet();
+      return setupWallet(args.profile as string | undefined);
     case "mindvault_wallet_info":
       return walletInfo();
+    case "mindvault_use_profile":
+      return useProfile(args.name as string);
+    case "mindvault_list_profiles":
+      return listProfiles();
     case "mindvault_browse":
       return browse();
     case "mindvault_search": {
@@ -1115,12 +1532,18 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return agentStatus();
     case "mindvault_registry_info":
       return registryInfo();
+    case "mindvault_check_bindings":
+      return checkBindings();
     case "mindvault_registry_lookup":
       return registryLookup(args.resourceId as string);
     case "mindvault_tx_status":
       return txStatus(args.txHash as string);
     case "mindvault_reset":
-      return resetState();
+      return resetState(args.all === true);
+    case "mindvault_backup_state":
+      return backupState(args.passphrase as string);
+    case "mindvault_restore_state":
+      return restoreStateTool(args.blob as string, args.passphrase as string);
     case "mindvault_metrics":
       return toolMetrics(args.reset === true);
     default:
@@ -1131,6 +1554,7 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
+    assertMainnetMutationAllowed(STELLAR_NETWORK, name, args as Record<string, unknown>);
     let result: string;
     switch (name) {
       case "mindvault_setup_wallet":
@@ -1187,6 +1611,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "mindvault_registry_info":
         result = registryInfo();
         break;
+      case "mindvault_network_profile":
+        result = networkProfile();
+        break;
       case "mindvault_check_bindings":
         result = await checkBindings();
         break;
@@ -1199,9 +1626,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "mindvault_reset":
         result = resetState(args.all === true);
         break;
+      case "mindvault_backup_state":
+        result = backupState(args.passphrase as string);
+        break;
+      case "mindvault_restore_state":
+        result = restoreStateTool(args.blob as string, args.passphrase as string);
+        break;
+      case "mindvault_metrics":
+        result = toolMetrics(args.reset === true);
+        break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+    const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
@@ -1209,17 +1646,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Best-effort startup check: warn on stderr (never fatal, never blocks) when the
-// installed bindings drift from the deployed contract. Skipped under tests so it
-// never makes a real network call. Errors (e.g. offline) are swallowed — the
-// mindvault_check_bindings tool gives operators an on-demand, detailed report.
-if (!process.env.VITEST) {
+// installed bindings drift from the deployed contract. Skipped under tests and
+// mock mode so it never makes a real network call. Errors (e.g. offline) are
+// swallowed — the mindvault_check_bindings tool gives operators a detailed report.
+if (!process.env.VITEST && !MOCK) {
   void checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
     networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
     network: STELLAR_NETWORK,
   })
-    .then((result) => {
+    .then((result: { status: string; message: string }) => {
       if (result.status === "mismatch") console.error(`MindVault MCP: ${result.message}`);
     })
     .catch(() => {

@@ -182,3 +182,25 @@ curl -s $BASE/agent/status | jq .agent
 - [ ] Set up monitoring / alerting for server errors and failed payment settlements
 - [ ] Verify on [Stellar Expert (mainnet)](https://stellar.expert/explorer/public) that the contract is visible and the platform wallet address is correct
 - [ ] Update README links to point to the production deployment
+
+---
+
+## MCP mainnet guardrails
+
+When the MCP server runs with `STELLAR_NETWORK=mainnet` (or x402 `stellar:pubnet`), tools that **mutate state or spend funds** require an explicit confirmation. Read-only tools stay unrestricted.
+
+**Gated tools:** `mindvault_setup_wallet`, `mindvault_register`, `mindvault_publish`, `mindvault_buy`, `mindvault_register_onchain`, `mindvault_reset`.
+
+**Confirm either:**
+
+1. Pass `confirmMainnet: true` on the tool call, or
+2. Set `MINDVAULT_ALLOW_MAINNET=1` on the MCP process (unlocks all gated tools for that process).
+
+Without confirmation the tool returns a deterministic, agent-safe error (no secrets). Diagnostics also appear in `mindvault_registry_info` (`network`, `x402Network`, `mainnetDiagnostics`).
+
+```json
+{ "resourceId": "res-001", "confirmMainnet": true }
+```
+
+See also: [`docs/environment-variables.md`](./environment-variables.md) (`STELLAR_NETWORK`, `MINDVAULT_ALLOW_MAINNET`).
+
