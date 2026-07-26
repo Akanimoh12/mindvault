@@ -111,6 +111,8 @@ For a copy-pasteable, end-to-end agent session — wallet setup → register →
 
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
 
+Before publishing the package to a registry, run `pnpm --filter @mindvault/mcp prepublish:check` — it gates tests, build freshness, the manifest, the `bin` entrypoint, tarball contents, and dependency resolvability. See **[docs/mcp-publish-checklist.md](docs/mcp-publish-checklist.md)**.
+
 ## Project Structure
 
 ```

@@ -67,14 +67,40 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
   });
 }
 
-async function readJson(init?: RequestInit): Promise<any> {
-  const body = init?.body;
-  if (typeof body !== "string" || body.length === 0) return {};
+function parseJson(body: string): any {
+  if (body.length === 0) return {};
   try {
     return JSON.parse(body);
   } catch {
     return {};
   }
+}
+
+/**
+ * Normalize the two shapes a caller may use into url/method/body.
+ *
+ * The x402 payment wrapper re-issues the paid retry as a `Request` object
+ * rather than (url, init), so reading the method and body off `init` alone
+ * would see every paid call as a bodyless GET.
+ */
+async function normalizeRequest(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<{ url: string; method: string; body: string }> {
+  const isRequest = typeof Request !== "undefined" && input instanceof Request;
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+  const method = (
+    init?.method ??
+    (isRequest ? (input as Request).method : undefined) ??
+    "GET"
+  ).toUpperCase();
+
+  let body = "";
+  if (typeof init?.body === "string") body = init.body;
+  else if (isRequest) body = await (input as Request).clone().text();
+
+  return { url, method, body };
 }
 
 /**
@@ -88,8 +114,7 @@ export function createMockFetch(): typeof fetch {
   let counter = 0;
 
   const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const method = (init?.method ?? "GET").toUpperCase();
+    const { url, method, body: rawBody } = await normalizeRequest(input, init);
     const { pathname } = new URL(url);
 
     // Sponsored-account service: mint a real (random) keypair so the server can
@@ -110,7 +135,7 @@ export function createMockFetch(): typeof fetch {
     }
 
     // Soroban RPC (POST JSON-RPC): answer getTransaction with SUCCESS.
-    if (method === "POST" && (await isSorobanRpc(init))) {
+    if (method === "POST" && isSorobanRpc(rawBody)) {
       return json({ jsonrpc: "2.0", id: 1, result: { status: "SUCCESS", latestLedger: 1000 } });
     }
 
@@ -142,7 +167,7 @@ export function createMockFetch(): typeof fetch {
         });
       }
       if (method === "POST") {
-        const body = await readJson(init);
+        const body = parseJson(rawBody);
         counter += 1;
         const id = `mock-new-${counter}`;
         const resource: MockResource = {
@@ -186,14 +211,9 @@ export function createMockFetch(): typeof fetch {
 }
 
 /** True when the request body is a Soroban JSON-RPC call (used to route txStatus). */
-async function isSorobanRpc(init?: RequestInit): Promise<boolean> {
-  if (typeof init?.body !== "string") return false;
-  try {
-    const parsed = JSON.parse(init.body);
-    return parsed?.jsonrpc === "2.0" && typeof parsed?.method === "string";
-  } catch {
-    return false;
-  }
+function isSorobanRpc(body: string): boolean {
+  const parsed = parseJson(body);
+  return parsed?.jsonrpc === "2.0" && typeof parsed?.method === "string";
 }
 
 /**
