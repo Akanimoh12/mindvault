@@ -110,9 +110,18 @@ Same flow as step 2 — send testnet USDC to Agent B's address. The amount needs
 
 ### 8. `mindvault_browse`
 
-Lists all resources in the catalog with their IDs, titles, prices, and access URLs.
+Lists resources in the catalog with their IDs, titles, prices, and access URLs. Accepts the same optional filters as `mindvault_search` / `GET /resources` (keyword, price range, verification status, resource type, owner, sort, pagination, tags, listed).
 
-**Input:** _(none)_
+**Input:** _(none required; filters optional)_
+
+```json
+{
+  "verificationStatus": "verified",
+  "maxPrice": "1.00",
+  "sort": "price_asc",
+  "limit": 20
+}
+```
 
 **Example output:**
 
@@ -124,7 +133,7 @@ Lists all resources in the catalog with their IDs, titles, prices, and access UR
 
 ### 9. `mindvault_search` (optional)
 
-Search the catalog by keyword plus filters. The MCP server forwards the filters to the backend, so the result set is narrowed before it reaches the agent.
+Search the catalog by keyword plus filters. Server-supported filters are forwarded to `GET /resources`; `tags` and `listed` are applied client-side for parity with catalog/meta fields.
 
 **Input:**
 
@@ -134,7 +143,13 @@ Search the catalog by keyword plus filters. The MCP server forwards the filters 
   "minPrice": "0.01",
   "maxPrice": "1.00",
   "verificationStatus": "verified",
-  "resourceType": "link"
+  "resourceType": "link",
+  "owner": "Alice",
+  "sort": "newest",
+  "limit": 20,
+  "offset": 0,
+  "tags": "forecast,weather",
+  "listed": true
 }
 ```
 
@@ -151,6 +166,8 @@ If no resource matches, the error message includes the applied filters, for exam
 ```
 No resources match query "forecast", min $0.01, max $1.00, status verified, type link.
 ```
+
+Invalid filter values (bad price range, unknown enums, etc.) return a deterministic error string without calling the API.
 
 ### 10. `mindvault_preview` (optional)
 

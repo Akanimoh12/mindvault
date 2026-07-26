@@ -183,13 +183,13 @@ describe("search", () => {
 
   it("returns message for empty query", async () => {
     const result = await search("");
-    expect(result).toBe("Provide a non-empty search query.");
+    expect(result).toBe("Provide a search query or at least one catalog filter.");
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("returns message for whitespace-only query", async () => {
     const result = await search("   ");
-    expect(result).toBe("Provide a non-empty search query.");
+    expect(result).toBe("Provide a search query or at least one catalog filter.");
   });
 
   it("returns message when no resources match", async () => {
@@ -226,6 +226,105 @@ describe("search", () => {
       expect.stringContaining("/resources"),
       expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
     );
+  });
+
+  it("forwards price, type, and verification filters in the query string", async () => {
+    await search({
+      query: "Stellar",
+      minPrice: "1.00",
+      maxPrice: "10.00",
+      verificationStatus: "verified",
+      resourceType: "link",
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("search=Stellar");
+    expect(url).toContain("minPrice=1.00");
+    expect(url).toContain("maxPrice=10.00");
+    expect(url).toContain("verificationStatus=verified");
+    expect(url).toContain("resourceType=link");
+  });
+
+  it("forwards owner, sort, and pagination filters", async () => {
+    await search({
+      query: "x",
+      owner: "Alice",
+      sort: "price_asc",
+      limit: 10,
+      offset: 5,
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("owner=Alice");
+    expect(url).toContain("sort=price_asc");
+    expect(url).toContain("limit=10");
+    expect(url).toContain("offset=5");
+  });
+
+  it("filters by tags and listed client-side", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      mockResponse([
+        {
+          ...sampleResources[0],
+          tags: ["stellar", "guide"],
+          listed: true,
+        },
+        {
+          ...sampleResources[1],
+          tags: ["soroban"],
+          listed: true,
+        },
+      ]),
+    );
+    const result = await search({ query: "a", tags: ["stellar"], listed: true });
+    expect(result).toContain("res-001");
+    expect(result).not.toContain("res-002");
+  });
+
+  it("allows filter-only search without a keyword", async () => {
+    const result = await search({ resourceType: "link", verificationStatus: "verified" });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("resourceType=link");
+    expect(url).toContain("verificationStatus=verified");
+    expect(url).not.toContain("search=");
+    expect(result).toContain("res-001");
+  });
+});
+
+describe("browse with filters", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(mockResponse(sampleResources)),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("applies the same catalog filters as search", async () => {
+    await browse({
+      query: "Stellar",
+      minPrice: "1.00",
+      maxPrice: "10.00",
+      verificationStatus: "verified",
+      resourceType: "link",
+      owner: "Alice",
+      sort: "newest",
+      limit: 20,
+      offset: 0,
+      tags: ["guide"],
+      listed: true,
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("search=Stellar");
+    expect(url).toContain("minPrice=1.00");
+    expect(url).toContain("owner=Alice");
+    expect(url).not.toContain("tags=");
+    expect(url).not.toContain("listed=");
+  });
+
+  it("returns a no-match message when filters exclude everything", async () => {
+    const result = await browse({ query: "zzzz-no-match" });
+    expect(result).toContain("No resources match");
   });
 });
 
@@ -429,8 +528,10 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
 
     const result = await buy("res-001");
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id", "res-001");
-    expect(parsed).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed).toHaveProperty("after");
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 
   it("returns an insufficient-funds message when wallet balance is too low", async () => {
@@ -530,8 +631,10 @@ describe("buy – output shape for agent consumption", () => {
     // Output must be parseable JSON – agents rely on this.
     expect(() => JSON.parse(result)).not.toThrow();
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id");
-    expect(parsed).toHaveProperty("accessUrl");
+    expect(parsed).toHaveProperty("after");
+    expect(parsed.after).toHaveProperty("id");
+    expect(parsed.after).toHaveProperty("accessUrl");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 });
 
@@ -947,7 +1050,6 @@ describe("wallet_info balance details", () => {
     await expect(walletInfo()).rejects.toThrow("Horizon error 500");
   });
 });
-
 
 // ── networkProfile (#412) ───────────────────────────────────────────────────
 
