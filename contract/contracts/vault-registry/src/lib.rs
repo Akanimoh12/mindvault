@@ -442,10 +442,6 @@ impl VaultRegistry {
 
         env.storage().persistent().remove(&key);
 
-        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
-
-        env.storage().persistent().remove(&key);
-
         env.events().publish(
             (symbol_short!("transfer"), id),
             (previous_owner, pending_owner),
