@@ -819,9 +819,6 @@ impl VaultRegistry {
             .get(&key)
             .ok_or(Error::NotFound)
     }
-
-        env.storage().persistent().get(&key).ok_or(Error::NotFound)
-    }
 }
 
 impl VaultRegistry {
