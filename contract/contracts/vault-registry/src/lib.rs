@@ -47,9 +47,18 @@ pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 /// code, this const, and the docs fails a test.
 pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("register", "Resource"),
-    ("setprice", "PriceUpdated { id, old_price, new_price, updater }"),
-    ("updmeta", "MetadataUpdateEvent { id, old_metadata, new_metadata }"),
-    ("settags", "(prev_tags: Vec<String>, next_tags: Vec<String>)"),
+    (
+        "setprice",
+        "PriceUpdated { id, old_price, new_price, updater }",
+    ),
+    (
+        "updmeta",
+        "MetadataUpdateEvent { id, old_metadata, new_metadata }",
+    ),
+    (
+        "settags",
+        "(prev_tags: Vec<String>, next_tags: Vec<String>)",
+    ),
     ("transfer", "(previous_owner: Address, new_owner: Address)"),
     ("propose", "(owner: Address, proposed: Address)"),
     ("cancel", "owner: Address"),
@@ -58,6 +67,14 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("setadmin", "new_admin: Address"),
     ("nomadmin", "new_admin: Address"),
     ("accadmin", "new_admin: Address"),
+    ("freeze", "()"),
+    (
+        "verify",
+        "(old_status: VerificationStatus, new_status: VerificationStatus)",
+    ),
+    ("addverif", "true"),
+    ("rmverif", "false"),
+    ("reindex", "new_count: u32 (topic carries old_count: u32)"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -76,6 +93,8 @@ pub struct RegistryInfo {
     /// (`env.ledger().network_id()`), so clients can confirm they are
     /// talking to the network they expect without a hardcoded config value.
     pub network_id: BytesN<32>,
+}
+
 /// On-chain mirror of the server's off-chain verification result. Settable
 /// only by an address holding the verifier role (see `add_verifier`).
 #[contracttype]
@@ -170,11 +189,6 @@ pub enum Error {
     TermsHashTooLong = 10,
     InvalidResourceId = 11,
     InvalidMetadataPointer = 12,
-    AlreadyOwner = 13,
-    NoPendingTransfer = 14,
-    ReservedId = 15,
-    PriceExceedsMax = 16,
-    EmptyMetadata = 17,
     EmptyMetadata = 13,
     AlreadyOwner = 14,
     NoPendingTransfer = 15,
@@ -391,13 +405,6 @@ impl VaultRegistry {
         Self::save(&env, &resource);
         Self::move_creator_index(&env, &previous_owner, &new_creator, &id);
 
-        Self::remove_from_creator_index(&env, &previous_owner, &id);
-        let prev_count = Self::creator_count(&env, &previous_owner);
-        Self::set_creator_count(&env, &previous_owner, prev_count.saturating_sub(1));
-        Self::append_to_creator_index(&env, &new_creator, id.clone());
-        let new_count = Self::creator_count(&env, &new_creator);
-        Self::set_creator_count(&env, &new_creator, new_count + 1);
-
         let pending_key = DataKey::PendingTransfer(id.clone());
         if env.storage().persistent().has(&pending_key) {
             env.storage().persistent().remove(&pending_key);
@@ -442,10 +449,6 @@ impl VaultRegistry {
         resource.creator = pending_owner.clone();
         Self::save(&env, &resource);
         Self::move_creator_index(&env, &previous_owner, &pending_owner, &id);
-
-        env.storage().persistent().remove(&key);
-
-        env.events().publish((symbol_short!("transfer"), id), (previous_owner, pending_owner));
 
         env.storage().persistent().remove(&key);
 
@@ -642,10 +645,6 @@ impl VaultRegistry {
             resource_schema_version: RESOURCE_SCHEMA_VERSION,
             network_id: env.ledger().network_id(),
         }
-    /// Number of resources currently owned by `creator`. Reflects ownership
-    /// transfers (unlike `count`, which is monotonic).
-    pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
-        Self::creator_count(&env, &creator)
     }
 
     /// Current contract admin.
@@ -810,12 +809,6 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)
-    }
-
         env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }

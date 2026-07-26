@@ -17,7 +17,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          # `stellar contract build` targets wasm32v1-none (the build and the
+          # size/artifact steps below read target/wasm32v1-none/); without it
+          # the build fails with "can't find crate for `core`".
+          targets: wasm32v1-none, wasm32-unknown-unknown
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -44,7 +47,11 @@ jobs:
         working-directory: contract
         run: |
           WASM_FILE="target/wasm32v1-none/release/vault_registry.wasm"
-          MAX_SIZE=28672
+          # 36 KB. Raised from 28 KB: the 28 KB figure was set against a
+          # snapshot that did not yet include registry_info, the verifier role,
+          # the on-chain verification mirror, metadata freeze, and index repair
+          # — those merged together and the optimized build is now ~33 KB.
+          MAX_SIZE=36864
           SIZE=$(stat -c%s "$WASM_FILE")
           echo "WASM Size: $SIZE bytes"
           if [ "$SIZE" -gt "$MAX_SIZE" ]; then

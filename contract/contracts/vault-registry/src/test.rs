@@ -8,7 +8,6 @@ use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
     Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
-use alloc::{format, string::ToString};
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
     let key = DataKey::Resource(id.clone());
@@ -936,7 +935,10 @@ fn update_metadata_rejects_over_max_length() {
         client.try_update_metadata(&id, &metadata),
         Err(Ok(Error::MetadataTooLong))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ar://short"));
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ar://short")
+    );
 }
 
 // Empty metadata and single-character metadata (e.g. "a") are both rejected
@@ -944,11 +946,6 @@ fn update_metadata_rejects_over_max_length() {
 // respectively, since "a" matches no supported pointer prefix) — see
 // `register_rejects_empty_metadata`, `update_metadata_rejects_empty`, and
 // `invalid_metadata_pointer_rejected` below.
-    assert_eq!(
-        client.get(&id).metadata,
-        String::from_str(&env, "ar://short")
-    );
-}
 
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
@@ -1427,16 +1424,11 @@ fn register_rejects_empty_metadata() {
 #[test]
 fn update_metadata_rejects_empty() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "upd-empty");
     let id = String::from_str(&env, "updempty");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "ipfs://QmOriginal"),
-        &empty_tags(&env),
-    );
-
         &String::from_str(&env, "ipfs://valid"),
         &empty_tags(&env),
     );
@@ -1447,7 +1439,6 @@ fn update_metadata_rejects_empty() {
     );
     assert_eq!(
         client.get(&id).metadata,
-        String::from_str(&env, "ipfs://QmOriginal")
         String::from_str(&env, "ipfs://valid")
     );
 }
@@ -1578,23 +1569,6 @@ fn update_metadata_failed_validation_emits_no_event() {
         client.try_update_metadata(&id, &empty),
         Err(Ok(Error::EmptyMetadata))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ipfs://valid"));
-
-    // No updmeta event should be emitted when the call fails.
-    let events = collect_updmeta_events(&env, &client.address);
-    assert_eq!(events.len(), 0, "failed update_metadata must not emit any updmeta event");
-}
-
-#[test]
-fn update_metadata_too_long_emits_no_event() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-no-emit-2");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
     assert_eq!(
         client.get(&id).metadata,
         String::from_str(&env, "ipfs://valid")
@@ -1929,7 +1903,6 @@ fn creator_resource_count_increments_on_register() {
     // Failed duplicate does not inflate count.
     let dup = String::from_str(&env, "r1");
     assert_eq!(
-        client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env)),
         client.try_register(
             &creator,
             &dup,
@@ -1995,7 +1968,6 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
-        id_str in r"[a-zA-Z0-9_-]{1,24}",
         id_str in r"[a-z0-9]{1,24}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
@@ -2046,9 +2018,6 @@ proptest! {
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "eventtest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2093,9 +2062,6 @@ fn set_tags_event_includes_prev_and_next() {
 #[test]
 fn set_tags_event_supports_tag_removal() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "removal-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "removaltest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2124,9 +2090,6 @@ fn set_tags_event_supports_tag_removal() {
 #[test]
 fn set_tags_event_supports_tag_addition() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "addition-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "additiontest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2155,9 +2118,6 @@ fn set_tags_event_supports_tag_addition() {
 #[test]
 fn set_tags_event_on_replacement() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "replace-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "replacetest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2241,7 +2201,7 @@ fn registry_info_exposes_stable_fields() {
 
     assert_eq!(info.name, String::from_str(&env, REGISTRY_NAME));
     assert_eq!(info.resource_schema_version, RESOURCE_SCHEMA_VERSION);
-    assert!(info.version.len() > 0, "version must not be empty");
+    assert!(!info.version.is_empty(), "version must not be empty");
     assert_eq!(info.network_id, env.ledger().network_id());
 }
 
@@ -2252,14 +2212,17 @@ fn registry_info_is_stable_across_calls_and_registrations() {
 
     client.register(
         &creator,
-        &String::from_str(&env, "info-stability"),
+        &String::from_str(&env, "infostability"),
         &100i128,
         &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
     let after = client.registry_info();
-    assert_eq!(before, after, "registry_info must not depend on registry contents");
+    assert_eq!(
+        before, after,
+        "registry_info must not depend on registry contents"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2301,7 +2264,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
         }
     }
 
-    let r0 = String::from_str(&env, "schema-r0");
+    let r0 = String::from_str(&env, "schemar0");
     client.register(
         &alice,
         &r0,
@@ -2331,7 +2294,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.accept_transfer(&r0);
     record(&env, &client, &mut observed);
 
-    let r1 = String::from_str(&env, "schema-r1");
+    let r1 = String::from_str(&env, "schemar1");
     client.register(
         &alice,
         &r1,
@@ -2343,7 +2306,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.transfer_ownership(&r1, &bob);
     record(&env, &client, &mut observed);
 
-    let r2 = String::from_str(&env, "schema-r2");
+    let r2 = String::from_str(&env, "schemar2");
     client.register(
         &alice,
         &r2,
@@ -2369,6 +2332,21 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.accept_admin(&admin2);
     record(&env, &client, &mut observed);
 
+    // Verifier role, verification mirror, freeze, and index repair.
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier); // -> "addverif"
+    record(&env, &client, &mut observed);
+    client.set_verification_status(&r2, &verifier, &VerificationStatus::Verified); // -> "verify"
+    record(&env, &client, &mut observed);
+    client.remove_verifier(&verifier); // -> "rmverif"
+    record(&env, &client, &mut observed);
+
+    client.freeze_metadata(&r2); // -> "freeze"
+    record(&env, &client, &mut observed);
+
+    client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
+    record(&env, &client, &mut observed);
+
     observed.sort();
     observed.dedup();
 
@@ -2384,6 +2362,8 @@ fn full_workflow_emits_exactly_the_documented_events() {
          EVENT_SCHEMA (and contract/README.md's Events table) whenever you add, \
          rename, or remove an emitted event"
     );
+}
+
 // ─── Test helpers for the role / verification / freeze / repair suites ────
 
 /// Like `setup`, but also installs `admin` as the contract admin via the
@@ -2614,6 +2594,9 @@ fn event_schema_matches_documented_readme_table() {
         "contract/README.md's Events table row count must match EVENT_SCHEMA's \
          length exactly (no duplicate or missing rows)"
     );
+}
+
+#[test]
 fn freeze_metadata_sets_flag_and_emits_event() {
     let (env, creator, client) = setup();
     let id = register_default(&env, &creator, &client, "fres0");

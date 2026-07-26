@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "ttl-xfer"
+                  "string": "ttlxfer"
                 },
                 {
                   "i128": {
@@ -49,7 +49,7 @@
               "function_name": "transfer_ownership",
               "args": [
                 {
-                  "string": "ttl-xfer"
+                  "string": "ttlxfer"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -156,7 +156,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "ttl-xfer"
+                      "string": "ttlxfer"
                     }
                   ]
                 }
@@ -203,7 +203,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "ttl-xfer"
+                  "string": "ttlxfer"
                 }
               }
             },
@@ -222,7 +222,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "ttl-xfer"
+                  "string": "ttlxfer"
                 }
               ]
             },
@@ -242,7 +242,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "ttl-xfer"
+                      "string": "ttlxfer"
                     }
                   ]
                 },
@@ -259,10 +259,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "frozen"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "ttl-xfer"
+                        "string": "ttlxfer"
                       }
                     },
                     {
@@ -298,6 +306,18 @@
                       },
                       "val": {
                         "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "verified"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Pending"
+                          }
+                        ]
                       }
                     }
                   ]
