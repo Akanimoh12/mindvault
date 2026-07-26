@@ -48,6 +48,7 @@ import {
 import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
+import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -196,11 +197,29 @@ function saveState(): void {
   }
 }
 
+/** Snapshot what a reset would destroy, before anything is mutated. */
+function currentResetScope(all: boolean): ResetScope {
+  return {
+    all,
+    activeProfile: activeProfileName,
+    profileNames: Object.keys(profiles),
+    hasWallet: !!currentWallet(),
+    hasApiKey: !!currentApiKey(),
+    stateFile: STATE_FILE,
+  };
+}
+
 /**
  * Clear credentials. By default only the active profile is cleared; pass
  * `all: true` to wipe every profile and delete the state file.
+ *
+ * Destructive and irreversible, so it is guarded: without an explicit truthy
+ * `confirm` the call is a no-op that returns a warning describing exactly what
+ * would be removed. Only a confirmed call clears memory and disk.
  */
-function resetState(all: boolean): string {
+export function resetState(all: boolean, confirm: unknown = false): string {
+  if (!isResetConfirmed(confirm)) return formatResetPreview(currentResetScope(all));
+
   if (all) {
     profiles = {};
     activeProfileName = DEFAULT_PROFILE;
@@ -1578,10 +1597,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_reset",
       description:
-        "Clear credentials from memory and disk (~/.mindvault/state.json). By default only the active profile is cleared; pass all=true to remove every profile and delete the state file. After reset, run mindvault_setup_wallet and mindvault_register again.",
+        "Clear credentials from memory and disk (~/.mindvault/state.json). Destructive and irreversible, so it is two-step: without confirm=true the call changes nothing and returns a warning listing exactly what would be removed; call again with confirm=true to perform it. By default only the active profile is cleared; pass all=true to remove every profile and delete the state file. After a confirmed reset, run mindvault_setup_wallet and mindvault_register again.",
       inputSchema: {
         type: "object",
         properties: {
+          confirm: {
+            type: "boolean",
+            description:
+              "Required to actually clear anything. Omitted or false returns a warning describing what would be removed and performs no deletion. Example: true clears the credentials.",
+            examples: [true, false],
+          },
           all: {
             type: "boolean",
             description:
@@ -1703,7 +1728,7 @@ async function dispatchTool(name: string, args: any): Promise<string> {
     case "mindvault_tx_status":
       return txStatus(args.txHash as string);
     case "mindvault_reset":
-      return resetState(args.all === true);
+      return resetState(args.all === true, args.confirm);
     case "mindvault_backup_state":
       return backupState(args.passphrase as string);
     case "mindvault_restore_state":

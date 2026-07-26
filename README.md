@@ -74,7 +74,7 @@ Available tools:
 | `mindvault_registry_info`    | Return the on-chain vault-registry contract details                   | `"Show me registry info"`                                       |
 | `mindvault_registry_lookup`  | Look up a resource directly from the on-chain vault registry by ID    | `"Look up resource swcn98besxpp6t1u8e77fqz3 on-chain"`          |
 | `mindvault_tx_status`        | Look up a Stellar transaction status by hash                          | `"Check tx a1b2c3d4..."`                                        |
-| `mindvault_reset`            | Clear the persisted wallet and publisher API key from memory and disk | `"Reset my agent credentials"`                                  |
+| `mindvault_reset`            | Clear the persisted wallet and publisher API key; needs confirm: true | `"Reset my agent credentials"`                                  |
 
 ### Install
 
