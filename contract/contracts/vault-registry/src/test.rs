@@ -2370,6 +2370,8 @@ fn full_workflow_emits_exactly_the_documented_events() {
          EVENT_SCHEMA (and contract/README.md's Events table) whenever you add, \
          rename, or remove an emitted event"
     );
+}
+
 // ─── Test helpers for the role / verification / freeze / repair suites ────
 
 /// Like `setup`, but also installs `admin` as the contract admin via the
@@ -2600,6 +2602,9 @@ fn event_schema_matches_documented_readme_table() {
         "contract/README.md's Events table row count must match EVENT_SCHEMA's \
          length exactly (no duplicate or missing rows)"
     );
+}
+
+#[test]
 fn freeze_metadata_sets_flag_and_emits_event() {
     let (env, creator, client) = setup();
     let id = register_default(&env, &creator, &client, "fres0");
