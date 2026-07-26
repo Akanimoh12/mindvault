@@ -8,7 +8,6 @@ use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
     Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
-use alloc::{format, string::ToString};
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
     let key = DataKey::Resource(id.clone());
@@ -936,7 +935,10 @@ fn update_metadata_rejects_over_max_length() {
         client.try_update_metadata(&id, &metadata),
         Err(Ok(Error::MetadataTooLong))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ar://short"));
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ar://short")
+    );
 }
 
 // Empty metadata and single-character metadata (e.g. "a") are both rejected
@@ -1567,11 +1569,18 @@ fn update_metadata_failed_validation_emits_no_event() {
         client.try_update_metadata(&id, &empty),
         Err(Ok(Error::EmptyMetadata))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ipfs://valid"));
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://valid")
+    );
 
     // No updmeta event should be emitted when the call fails.
     let events = collect_updmeta_events(&env, &client.address);
-    assert_eq!(events.len(), 0, "failed update_metadata must not emit any updmeta event");
+    assert_eq!(
+        events.len(),
+        0,
+        "failed update_metadata must not emit any updmeta event"
+    );
 }
 
 #[test]
@@ -1915,7 +1924,6 @@ fn creator_resource_count_increments_on_register() {
     // Failed duplicate does not inflate count.
     let dup = String::from_str(&env, "r1");
     assert_eq!(
-        client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env)),
         client.try_register(
             &creator,
             &dup,
@@ -1981,7 +1989,6 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
-        id_str in r"[a-zA-Z0-9_-]{1,24}",
         id_str in r"[a-z0-9]{1,24}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
@@ -2032,9 +2039,6 @@ proptest! {
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "eventtest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2079,9 +2083,6 @@ fn set_tags_event_includes_prev_and_next() {
 #[test]
 fn set_tags_event_supports_tag_removal() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "removal-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "removaltest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2110,9 +2111,6 @@ fn set_tags_event_supports_tag_removal() {
 #[test]
 fn set_tags_event_supports_tag_addition() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "addition-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "additiontest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2141,9 +2139,6 @@ fn set_tags_event_supports_tag_addition() {
 #[test]
 fn set_tags_event_on_replacement() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "replace-test");
-    let metadata = String::from_str(&env, "ipfs://m");
-    
     let id = String::from_str(&env, "replacetest");
     let metadata = String::from_str(&env, "ipfs://m");
 
@@ -2245,7 +2240,10 @@ fn registry_info_is_stable_across_calls_and_registrations() {
     );
 
     let after = client.registry_info();
-    assert_eq!(before, after, "registry_info must not depend on registry contents");
+    assert_eq!(
+        before, after,
+        "registry_info must not depend on registry contents"
+    );
 }
 
 // ---------------------------------------------------------------------------

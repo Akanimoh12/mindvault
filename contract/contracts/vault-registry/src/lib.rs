@@ -47,9 +47,18 @@ pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 /// code, this const, and the docs fails a test.
 pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("register", "Resource"),
-    ("setprice", "PriceUpdated { id, old_price, new_price, updater }"),
-    ("updmeta", "MetadataUpdateEvent { id, old_metadata, new_metadata }"),
-    ("settags", "(prev_tags: Vec<String>, next_tags: Vec<String>)"),
+    (
+        "setprice",
+        "PriceUpdated { id, old_price, new_price, updater }",
+    ),
+    (
+        "updmeta",
+        "MetadataUpdateEvent { id, old_metadata, new_metadata }",
+    ),
+    (
+        "settags",
+        "(prev_tags: Vec<String>, next_tags: Vec<String>)",
+    ),
     ("transfer", "(previous_owner: Address, new_owner: Address)"),
     ("propose", "(owner: Address, proposed: Address)"),
     ("cancel", "owner: Address"),
@@ -799,10 +808,7 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 
