@@ -2605,6 +2605,9 @@ fn event_schema_matches_documented_readme_table() {
         "contract/README.md's Events table row count must match EVENT_SCHEMA's \
          length exactly (no duplicate or missing rows)"
     );
+}
+
+#[test]
 fn freeze_metadata_sets_flag_and_emits_event() {
     let (env, creator, client) = setup();
     let id = register_default(&env, &creator, &client, "fres0");
