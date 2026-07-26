@@ -61,6 +61,10 @@ pub enum DataKey {
     Admin,
     PendingAdmin,
     CreatorTerms(Address),
+    Admin,
+    CreatorResources(Address),
+    CreatorCount(Address),
+    PendingTransfer(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -102,6 +106,12 @@ pub enum Error {
     PendingAdminAlreadySet = 8,
     SameAdmin = 9,
     TermsHashTooLong = 6,
+    AlreadyInitialized = 7,
+    InvalidResourceId = 8,
+    InvalidMetadataPointer = 9,
+    AlreadyOwner = 10,
+    NoPendingTransfer = 11,
+    ReservedId = 12,
 }
 
 #[contract]
@@ -398,38 +408,6 @@ impl VaultRegistry {
         result
     }
 
-    /// Paginated list of resources whose `listed` flag is true, in insertion order.
-    ///
-    /// - Resources are ordered by registration sequence.
-    /// - `limit` is capped at `20`.
-    /// - Delisted resources are skipped; relisted resources will reappear.
-    /// - Returns an empty `Vec` if no listed resources fall in range.
-    pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
-        let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
-        let page_size = limit.min(20);
-        let mut result: Vec<Resource> = Vec::new(&env);
-        let mut i = start;
-        while i < total && result.len() < page_size {
-            if let Some(id) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, String>(&DataKey::Index(i))
-            {
-                if let Some(resource) = env
-                    .storage()
-                    .persistent()
-                    .get::<DataKey, Resource>(&DataKey::Resource(id))
-                {
-                    if resource.listed {
-                        result.push_back(resource);
-                    }
-                }
-            }
-            i += 1;
-        }
-        result
-    }
-
     /// Paginated listing of resources owned by `creator` in insertion order.
     ///
     /// - Results are ordered by global registration sequence for that creator.
@@ -573,16 +551,63 @@ impl VaultRegistry {
             .get(&key)
             .ok_or(Error::NotFound)
     }
+
+    /// One-time initialization of the contract admin.
+    /// Reverts with `AlreadyInitialized` if called more than once.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("init"), admin.clone()), ());
+        Ok(())
+    }
+
+    /// Return the admin address, or `NotFound` if not yet initialized.
+    pub fn admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotFound)
+    }
 }
 
 impl VaultRegistry {
-    fn is_reserved_id(id: &String) -> bool {
-        use alloc::string::ToString;
-        let id_str = id.to_string().to_lowercase();
-        match id_str.as_str() {
-            "admin" | "null" | "registry" | "api" | "index" | "root" | "system" => true,
-            _ => false,
+    fn validate_resource_id(id: &String) -> Result<(), Error> {
+        let len = id.len();
+        if len == 0 || len > 24 {
+            return Err(Error::InvalidResourceId);
         }
+        Ok(())
+    }
+
+    fn is_reserved_id(id: &soroban_sdk::String) -> bool {
+        let len = id.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        id.copy_into_slice(&mut buf);
+        let eq_ignore_case = |expected: &[u8]| -> bool {
+            if buf.len() != expected.len() {
+                return false;
+            }
+            for i in 0..buf.len() {
+                let a = buf[i];
+                let b = expected[i];
+                if a != b && a != b.wrapping_sub(32) && a.wrapping_sub(32) != b {
+                    return false;
+                }
+            }
+            true
+        };
+        eq_ignore_case(b"admin")
+            || eq_ignore_case(b"null")
+            || eq_ignore_case(b"registry")
+            || eq_ignore_case(b"api")
+            || eq_ignore_case(b"index")
+            || eq_ignore_case(b"root")
+            || eq_ignore_case(b"system")
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
@@ -593,14 +618,22 @@ impl VaultRegistry {
             return Err(Error::MetadataTooLong);
         }
 
-        let metadata_str = metadata.to_string();
-        if metadata_str.starts_with("ipfs://")
-            || metadata_str.starts_with("ar://")
-            || metadata_str.starts_with("https://")
-            || metadata_str.starts_with("http://")
-            || metadata_str.starts_with("sha256:")
-            || metadata_str.starts_with("sha-256:")
-            || metadata_str.starts_with("0x")
+        let len = metadata.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        metadata.copy_into_slice(&mut buf);
+        let starts_with = |prefix: &[u8]| -> bool {
+            if buf.len() < prefix.len() {
+                return false;
+            }
+            buf[..prefix.len()] == *prefix
+        };
+        if starts_with(b"ipfs://")
+            || starts_with(b"ar://")
+            || starts_with(b"https://")
+            || starts_with(b"http://")
+            || starts_with(b"sha256:")
+            || starts_with(b"sha-256:")
+            || starts_with(b"0x")
         {
             Ok(())
         } else {
