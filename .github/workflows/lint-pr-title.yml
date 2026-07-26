@@ -15,10 +15,12 @@ jobs:
   lint:
     name: Validate PR Title
     runs-on: ubuntu-latest
-    # Issue-number titles (e.g. "[417] [MCP] …") are used by Stellar Wave PRs.
-    if: ${{ !startsWith(github.event.pull_request.title, '[') }}
     steps:
+      - name: Accept issue-number PR titles
+        if: ${{ startsWith(github.event.pull_request.title, '[') }}
+        run: echo "Accepting issue-number title format for Wave/issue PRs."
       - name: Lint PR Title
+        if: ${{ !startsWith(github.event.pull_request.title, '[') }}
         uses: amannn/action-semantic-pull-request@v6.1.1
         with:
           types: |
