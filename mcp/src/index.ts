@@ -938,6 +938,18 @@ function registryInfo(): string {
 }
 
 /**
+ * Return opt-in tool-level metrics: per-tool call/error counts and durations,
+ * plus payment attempt/failure totals. Output is always safe for agent
+ * consumption (contains only tool names, counts, and durations — never
+ * arguments, wallets, or API keys).
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset && metrics.enabled) metrics.reset();
+  return JSON.stringify(snapshot, null, 2);
+}
+
+/**
  * Verify the installed registry-client bindings match the deployed contract's
  * interface. Returns the check's deterministic, agent-safe message (a match
  * summary, a mismatch warning with a recommended fix, or a "could not verify"
@@ -993,7 +1005,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           profile: {
             type: "string",
             description:
-              "Optional profile name to create/switch to (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Optional profile name to create/switch to. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'testnet', 'mainnet-publisher', 'buyer.alice'",
+            examples: ["testnet", "mainnet-publisher", "buyer.alice"],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1020,7 +1033,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: {
             type: "string",
             description:
-              "Profile name to make active (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Profile name to make active. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'mainnet', 'testnet-buyer', 'publisher.bob'",
+            examples: ["mainnet", "testnet-buyer", "publisher.bob"],
           },
         },
         required: ["name"],
@@ -1046,19 +1060,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           query: {
             type: "string",
-            description: "Keyword(s) to match against resource title or description.",
+            description:
+              "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
+            examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
           },
-          minPrice: { type: "string", description: "Minimum USDC price to include." },
-          maxPrice: { type: "string", description: "Maximum USDC price to include." },
+          minPrice: {
+            type: "string",
+            description:
+              "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
+            examples: ["5.00", "10.50", "0.50"],
+          },
+          maxPrice: {
+            type: "string",
+            description:
+              "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
+            examples: ["20.00", "15.99", "100.00"],
+          },
           verificationStatus: {
             type: "string",
             enum: ["pending", "verified", "rejected", "skipped"],
-            description: "Filter by verification status.",
+            description:
+              "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
+            examples: ["verified"],
           },
           resourceType: {
             type: "string",
             enum: ["file", "link"],
-            description: "Filter by resource type.",
+            description:
+              "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
+            examples: ["link", "file"],
           },
         },
         required: ["query"],
@@ -1066,10 +1096,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_preview",
-      description: "Get details and price for a specific resource.",
+      description:
+        "Get details and price for a specific resource before purchasing. Returns title, description, price, type, verification status, and access URL.",
       inputSchema: {
         type: "object",
-        properties: { resourceId: { type: "string" } },
+        properties: {
+          resourceId: {
+            type: "string",
+            description:
+              "The unique resource identifier from mindvault_browse or mindvault_search. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
+          },
+        },
         required: ["resourceId"],
       },
     },
@@ -1096,7 +1134,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_publish",
       description:
-        "Publish a link resource. Agent wallet signs the x402 verification payment on-chain.",
+        "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1133,13 +1171,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_register_onchain",
       description:
-        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet, submits it, and returns the registry status and on-chain tx hash.",
+        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet (which must be the resource creator), submits it, and returns the registry status and on-chain tx hash.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The id of the resource to register on-chain (from mindvault_publish).",
+            description:
+              "The resource ID to register on-chain (from mindvault_publish output). Must be verified and not already registered. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1152,13 +1192,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_agent_status",
-      description: "Check the verification agent's earnings and activity.",
+      description:
+        "Check the verification agent's earnings and activity. Returns total verifications, pass/fail counts, total USDC earned, average confidence score, and recent verification history with resource titles.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
       name: "mindvault_registry_info",
       description:
-        "Return the on-chain vault-registry contract ID and network so you can query ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
+        "Return the on-chain vault-registry contract ID, network passphrase, RPC URL, and the resource fields available for direct Soroban queries. Use this to verify ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
@@ -1170,13 +1211,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_registry_lookup",
       description:
-        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator, price (USDC), metadata, listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
+        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator wallet address, price (USDC), metadata (title/description), listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The resource ID to look up on-chain.",
+            description:
+              "The resource ID to look up on-chain. Must be a registered resource. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
           },
         },
         required: ["resourceId"],
@@ -1185,10 +1228,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_tx_status",
       description:
-        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger details and XDR.",
+        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
       inputSchema: {
         type: "object",
-        properties: { txHash: { type: "string" } },
+        properties: {
+          txHash: {
+            type: "string",
+            description:
+              "The 64-character hex transaction hash from Stellar. Example: 'abc123def456...' (from mindvault_register_onchain or mindvault_publish output).",
+            examples: [
+              "abc123def456789012345678901234567890123456789012345678901234",
+              "f47ac10b58cc4372a5670e02b2c3d479c3e5d0a1b2c3d4e5f6a7b8c9d0e1f2a3",
+            ],
+          },
+        },
         required: ["txHash"],
       },
     },
@@ -1201,7 +1254,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           all: {
             type: "boolean",
-            description: "Clear every profile and delete the state file (default: active only).",
+            description:
+              "Clear every profile and delete the state file (default: false clears active profile only). Example: true removes all profiles.",
+            examples: [true, false],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1256,7 +1311,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reset: {
             type: "boolean",
             description:
-              "Clear all counters after returning the current snapshot (default: false).",
+              "Clear all counters after returning the current snapshot (default: false leaves counters intact). Example: true resets metrics after reading.",
+            examples: [true, false],
           },
         },
         required: [],
