@@ -137,7 +137,24 @@ async function handleSetListedEvent(event: SorobanEvent): Promise<void> {
   const id = extractResourceId(event.topic);
   if (!id) return;
 
-  const listed = event.value.type === "bool" ? event.value.value === "true" : null;
+  // The `setlisted` event payload changed from a single `bool` to a two-element
+  // tuple `(old_listed: bool, new_listed: bool)`. The XDR representation is a
+  // `vec` with two bool entries. We extract `new_listed` (index 1) to determine
+  // the resulting state. A legacy single-bool payload is also accepted for
+  // backwards-compatibility with events emitted before the upgrade.
+  let listed: boolean | null = null;
+
+  if (event.value.type === "vec" && Array.isArray(event.value.vec)) {
+    // New format: (old_listed, new_listed) tuple
+    const newListedEntry = event.value.vec[1];
+    if (newListedEntry?.type === "bool") {
+      listed = newListedEntry.value === "true";
+    }
+  } else if (event.value.type === "bool") {
+    // Legacy format: single bool (pre-upgrade events)
+    listed = event.value.value === "true";
+  }
+
   if (listed !== null) {
     await db.update(resources).set({ listed }).where(eq(resources.id, id));
 

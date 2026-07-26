@@ -41,6 +41,16 @@ import {
   type WalletProfile,
 } from "./profiles.js";
 import { signMutatingHeaders } from "./requestSignature.js";
+import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
+import {
+  type WalletProfile,
+  type AgentWallet,
+  type ProfileState,
+  DEFAULT_PROFILE,
+  STATE_VERSION,
+  isValidProfileName,
+  migrateState,
+} from "./profiles.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
 
@@ -299,6 +309,114 @@ function makePaidFetch(wallet: AgentWallet) {
   return wrapFetchWithPayment(httpFetch, client);
 }
 
+/**
+ * Account/balance states the tool can distinguish for agent-facing output:
+ * - missing: account does not exist on Stellar (never funded)
+ * - no-trustline: account exists but has no USDC trustline
+ * - zero: USDC trustline exists with 0 balance
+ * - funded: USDC trustline exists with a positive balance
+ */
+interface BalanceDetails {
+  status: "missing" | "no-trustline" | "zero" | "funded";
+  xlmBalance: string;
+  xlmReserve: string;
+  xlmAvailable: string;
+  usdcBalance: string;
+  /** Human-readable diagnostic when the account/trustline is not usable. */
+  message?: string;
+}
+
+/**
+ * Query Horizon for the agent wallet's XLM and USDC balances, distinguishing
+ * missing account, missing trustline, and zero balance states for deterministic
+ * agent-facing output.
+ */
+async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
+  const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}`);
+
+  // Account does not exist (never funded with XLM).
+  if (res.status === 404) {
+    return {
+      status: "missing",
+      xlmBalance: "0",
+      xlmReserve: "0",
+      xlmAvailable: "0",
+      usdcBalance: "0",
+      message: `Account ${publicKey} does not exist. Fund it with at least 1 XLM to activate.`,
+    };
+  }
+
+  if (!res.ok) {
+    throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
+  }
+
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+
+  // Find native XLM balance.
+  const xlmBalance = balances.find((b: any) => b.asset_type === "native");
+  const xlm = xlmBalance?.balance ?? "0";
+
+  // Stellar reserves 0.5 XLM base + 0.5 XLM per entry (trustlines, offers, signers, data).
+  // Compute available = balance - reserve so agents know how much XLM they can spend.
+  const subentryCount = data.subentry_count ?? 0;
+  const baseReserve = 0.5; // Stellar base reserve per account
+  const entryReserve = 0.5; // Reserve per subentry
+  const reserve = baseReserve + subentryCount * entryReserve;
+  const available = Math.max(0, parseFloat(xlm) - reserve);
+
+  // Find USDC trustline.
+  const usdcBalance = balances.find(
+    (b: any) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC",
+  );
+
+  if (!usdcBalance) {
+    return {
+      status: "no-trustline",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: "0",
+      message: `USDC trustline not found. Add a USDC trustline to receive payments.`,
+    };
+  }
+
+  const usdc = usdcBalance.balance ?? "0";
+  const usdcFloat = parseFloat(usdc);
+
+  if (usdcFloat === 0) {
+    return {
+      status: "zero",
+      xlmBalance: xlm,
+      xlmReserve: reserve.toFixed(1),
+      xlmAvailable: available.toFixed(7),
+      usdcBalance: usdc,
+      message: `USDC balance is zero. Fund the account to use x402 payments.`,
+    };
+  }
+
+  return {
+    status: "funded",
+    xlmBalance: xlm,
+    xlmReserve: reserve.toFixed(1),
+    xlmAvailable: available.toFixed(7),
+    usdcBalance: usdc,
+  };
+}
+
+/**
+ * Legacy helper — returns USDC balance as a string, defaulting to "0" for
+ * missing account or trustline. Preserved for backward compatibility with
+ * insufficientFundsMessage() and other call sites. New code should use
+ * getBalanceDetails() for richer diagnostics.
+ */
+async function getUsdcBalance(publicKey: string): Promise<string> {
+  try {
+    const details = await getBalanceDetails(publicKey);
+    return details.usdcBalance;
+  } catch {
+    return "0";
+  }
 /** Fetch an account's USDC and native (XLM) balances from Horizon. */
 async function getAccountBalances(
   publicKey: string,
@@ -460,13 +578,24 @@ async function setupWallet(profileArg?: string): Promise<string> {
 
 export async function walletInfo(): Promise<string> {
   const wallet = requireWallet();
-  const balance = await getUsdcBalance(wallet.publicKey);
-  return [
+  const details = await getBalanceDetails(wallet.publicKey);
+
+  const lines = [
     `Profile: ${activeProfileName}`,
     `Address: ${wallet.publicKey}`,
-    `USDC Balance: ${balance}`,
+    `XLM Balance: ${details.xlmBalance}`,
+    `XLM Reserved: ${details.xlmReserve} (base + subentries)`,
+    `XLM Available: ${details.xlmAvailable}`,
+    `USDC Balance: ${details.usdcBalance}`,
+    `USDC Status: ${details.status}`,
     `Publisher registered: ${currentApiKey() ? "yes" : "no"}`,
-  ].join("\n");
+  ];
+
+  if (details.message) {
+    lines.push(`Note: ${details.message}`);
+  }
+
+  return lines.join("\n");
 }
 
 /** Switch the active profile, creating it if new. */
@@ -1084,6 +1213,61 @@ async function checkConsistency(resourceId: string): Promise<string> {
     : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
 
   return JSON.stringify({ ...report, summary }, null, 2);
+ * Report the current Stellar and x402 network configuration in use by this MCP
+ * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
+ * USDC contract IDs, and warnings for environment variable overrides that
+ * diverge from presets.
+ */
+export function networkProfile(): string {
+  const warnings: string[] = [];
+
+  // Detect custom overrides that differ from the preset
+  const usdcContractId = process.env.USDC_CONTRACT_ID ?? networkPreset.usdcSacContractId;
+  if (process.env.USDC_CONTRACT_ID && process.env.USDC_CONTRACT_ID !== networkPreset.usdcSacContractId) {
+    warnings.push(`USDC_CONTRACT_ID overrides preset (${networkPreset.usdcSacContractId} → ${process.env.USDC_CONTRACT_ID})`);
+  }
+  if (process.env.SOROBAN_RPC_URL && process.env.SOROBAN_RPC_URL !== networkPreset.sorobanRpcUrl) {
+    warnings.push(`SOROBAN_RPC_URL overrides preset (${networkPreset.sorobanRpcUrl} → ${process.env.SOROBAN_RPC_URL})`);
+  }
+  if (process.env.HORIZON_URL && process.env.HORIZON_URL !== networkPreset.horizonUrl) {
+    warnings.push(`HORIZON_URL overrides preset (${networkPreset.horizonUrl} → ${process.env.HORIZON_URL})`);
+  }
+  if (
+    process.env.VAULT_REGISTRY_CONTRACT_ID &&
+    networkPreset.defaultRegistryContractId &&
+    process.env.VAULT_REGISTRY_CONTRACT_ID !== networkPreset.defaultRegistryContractId
+  ) {
+    warnings.push(
+      `VAULT_REGISTRY_CONTRACT_ID overrides preset (${networkPreset.defaultRegistryContractId} → ${process.env.VAULT_REGISTRY_CONTRACT_ID})`,
+    );
+  }
+  if (process.env.NETWORK && process.env.NETWORK !== networkPreset.x402Network) {
+    warnings.push(`NETWORK overrides preset (${networkPreset.x402Network} → ${process.env.NETWORK})`);
+  }
+
+  const profile = {
+    stellarNetwork: STELLAR_NETWORK,
+    x402Network: NETWORK,
+    sorobanRpcUrl: SOROBAN_RPC_URL,
+    horizonUrl: HORIZON_URL,
+    registryContractId: REGISTRY_CONTRACT_ID,
+    usdcContractId,
+    warnings,
+  };
+
+  return JSON.stringify(profile, null, 2);
+}
+
+/**
+ * Return opt-in tool-level metrics: per-tool call/error counts and durations,
+ * plus payment attempt/failure totals. Output is always safe for agent
+ * consumption (contains only tool names, counts, and durations — never
+ * arguments, wallets, or API keys).
+ */
+function toolMetrics(reset: boolean): string {
+  const snapshot = metrics.snapshot();
+  if (reset && metrics.enabled) metrics.reset();
+  return JSON.stringify(snapshot, null, 2);
 }
 
 /**
@@ -1142,7 +1326,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           profile: {
             type: "string",
             description:
-              "Optional profile name to create/switch to (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Optional profile name to create/switch to. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'testnet', 'mainnet-publisher', 'buyer.alice'",
+            examples: ["testnet", "mainnet-publisher", "buyer.alice"],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1169,7 +1354,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: {
             type: "string",
             description:
-              "Profile name to make active (letters, digits, dot, dash, underscore; 1–64 chars).",
+              "Profile name to make active. Use letters, digits, dot, dash, or underscore (1–64 chars). Examples: 'mainnet', 'testnet-buyer', 'publisher.bob'",
+            examples: ["mainnet", "testnet-buyer", "publisher.bob"],
           },
         },
         required: ["name"],
@@ -1195,19 +1381,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           query: {
             type: "string",
-            description: "Keyword(s) to match against resource title or description.",
+            description:
+              "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
+            examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
           },
-          minPrice: { type: "string", description: "Minimum USDC price to include." },
-          maxPrice: { type: "string", description: "Maximum USDC price to include." },
+          minPrice: {
+            type: "string",
+            description:
+              "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
+            examples: ["5.00", "10.50", "0.50"],
+          },
+          maxPrice: {
+            type: "string",
+            description:
+              "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
+            examples: ["20.00", "15.99", "100.00"],
+          },
           verificationStatus: {
             type: "string",
             enum: ["pending", "verified", "rejected", "skipped"],
-            description: "Filter by verification status.",
+            description:
+              "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
+            examples: ["verified"],
           },
           resourceType: {
             type: "string",
             enum: ["file", "link"],
-            description: "Filter by resource type.",
+            description:
+              "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
+            examples: ["link", "file"],
           },
         },
         required: ["query"],
@@ -1215,10 +1417,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_preview",
-      description: "Get details and price for a specific resource.",
+      description:
+        "Get details and price for a specific resource before purchasing. Returns title, description, price, type, verification status, and access URL.",
       inputSchema: {
         type: "object",
-        properties: { resourceId: { type: "string" } },
+        properties: {
+          resourceId: {
+            type: "string",
+            description:
+              "The unique resource identifier from mindvault_browse or mindvault_search. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
+          },
+        },
         required: ["resourceId"],
       },
     },
@@ -1245,7 +1455,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_publish",
       description:
-        "Publish a link resource. Agent wallet signs the x402 verification payment on-chain.",
+        "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1282,13 +1492,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_register_onchain",
       description:
-        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet, submits it, and returns the registry status and on-chain tx hash.",
+        "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet (which must be the resource creator), submits it, and returns the registry status and on-chain tx hash.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The id of the resource to register on-chain (from mindvault_publish).",
+            description:
+              "The resource ID to register on-chain (from mindvault_publish output). Must be verified and not already registered. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1301,13 +1513,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_agent_status",
-      description: "Check the verification agent's earnings and activity.",
+      description:
+        "Check the verification agent's earnings and activity. Returns total verifications, pass/fail counts, total USDC earned, average confidence score, and recent verification history with resource titles.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
       name: "mindvault_registry_info",
       description:
-        "Return the on-chain vault-registry contract ID and network so you can query ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
+        "Return the on-chain vault-registry contract ID, network passphrase, RPC URL, and the resource fields available for direct Soroban queries. Use this to verify ownership, price, and listing state directly from Stellar without trusting the MindVault API.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
+      name: "mindvault_network_profile",
+      description:
+        "Report current Stellar/x402 network configuration (testnet/mainnet), RPC URLs, registry contract ID, and warnings for custom overrides. Use this to verify which network the MCP is connected to and diagnose configuration issues.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
@@ -1334,13 +1553,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_registry_lookup",
       description:
-        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator, price (USDC), metadata, listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
+        "Look up a resource directly from the on-chain vault registry by its ID. Returns creator wallet address, price (USDC), metadata (title/description), listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
       inputSchema: {
         type: "object",
         properties: {
           resourceId: {
             type: "string",
-            description: "The resource ID to look up on-chain.",
+            description:
+              "The resource ID to look up on-chain. Must be a registered resource. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "ckx9j2h3f"],
           },
         },
         required: ["resourceId"],
@@ -1349,10 +1570,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "mindvault_tx_status",
       description:
-        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger details and XDR.",
+        "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
       inputSchema: {
         type: "object",
-        properties: { txHash: { type: "string" } },
+        properties: {
+          txHash: {
+            type: "string",
+            description:
+              "The 64-character hex transaction hash from Stellar. Example: 'abc123def456...' (from mindvault_register_onchain or mindvault_publish output).",
+            examples: [
+              "abc123def456789012345678901234567890123456789012345678901234",
+              "f47ac10b58cc4372a5670e02b2c3d479c3e5d0a1b2c3d4e5f6a7b8c9d0e1f2a3",
+            ],
+          },
+        },
         required: ["txHash"],
       },
     },
@@ -1365,7 +1596,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           all: {
             type: "boolean",
-            description: "Clear every profile and delete the state file (default: active only).",
+            description:
+              "Clear every profile and delete the state file (default: false clears active profile only). Example: true removes all profiles.",
+            examples: [true, false],
           },
           confirmMainnet: {
             type: "boolean",
@@ -1420,7 +1653,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reset: {
             type: "boolean",
             description:
-              "Clear all counters after returning the current snapshot (default: false).",
+              "Clear all counters after returning the current snapshot (default: false leaves counters intact). Example: true resets metrics after reading.",
+            examples: [true, false],
           },
         },
         required: [],
@@ -1549,6 +1783,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "mindvault_registry_info":
         result = registryInfo();
+        break;
+      case "mindvault_network_profile":
+        result = networkProfile();
         break;
       case "mindvault_check_bindings":
         result = await checkBindings();

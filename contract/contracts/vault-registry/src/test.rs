@@ -4,10 +4,9 @@ use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+    Address, Env, IntoVal, String, Vec,
     Address, Env, String, TryFromVal, Vec,
 };
-
-const DAY_IN_LEDGERS: u32 = 17_280;
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
     let key = DataKey::Resource(id.clone());
@@ -52,6 +51,41 @@ fn register_then_read() {
     assert_eq!(r.price, 1_000_000i128);
     assert_eq!(r.metadata, metadata);
     assert!(r.listed); // Resources are listed by default
+}
+
+#[test]
+fn register_event_contains_full_resource_payload() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-res");
+    let metadata = String::from_str(&env, "ipfs://evt");
+    let price = 500i128;
+    let tags_list = tags(&env, &["tag1"]);
+
+    client.register(&creator, &id, &price, &metadata, &tags_list);
+
+    let all_events = env.events().all();
+    let mut found = false;
+    for i in 0..all_events.len() {
+        let (_, topics, data) = all_events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap()).ok().unwrap();
+        if t0 != Symbol::new(&env, "register") {
+            continue;
+        }
+        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data).ok().unwrap();
+        assert_eq!(resource.id, id);
+        assert_eq!(resource.creator, creator);
+        assert_eq!(resource.price, price);
+        assert_eq!(resource.metadata, metadata);
+        assert!(resource.listed);
+        assert_eq!(resource.tags.len(), 1);
+        assert_eq!(resource.tags.get(0).unwrap(), String::from_str(&env, "tag1"));
+        found = true;
+        break;
+    }
+    assert!(found, "register event not emitted");
 }
 
 #[test]
@@ -115,6 +149,39 @@ fn zero_or_negative_price_rejected() {
 }
 
 #[test]
+fn register_rejects_price_exceeding_max() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "too-pricey");
+    let metadata = String::from_str(&env, "ipfs://x");
+    let over = MAX_PRICE + 1;
+    assert_eq!(
+        client.try_register(&creator, &id, &over, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::PriceExceedsMax))
+    );
+}
+
+#[test]
+fn set_price_rejects_price_exceeding_max() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "r1");
+    client.register(&creator, &id, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env));
+    let over = MAX_PRICE + 1;
+    assert_eq!(
+        client.try_set_price(&id, &over),
+        Err(Ok(Error::PriceExceedsMax))
+    );
+}
+
+#[test]
+fn maximum_price_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "max-price");
+    let metadata = String::from_str(&env, "ipfs://x");
+    client.register(&creator, &id, &MAX_PRICE, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).price, MAX_PRICE);
+}
+
+#[test]
 fn invalid_resource_id_rejected() {
     let (env, creator, client) = setup();
     let metadata = String::from_str(&env, "x");
@@ -175,6 +242,46 @@ fn set_price_updates_value() {
         Err(Ok(Error::InvalidPrice))
     );
 }
+#[test]
+fn set_price_emits_structured_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-r1");
+    let initial_price = 1_000_000i128;
+    let updated_price = 2_500_000i128;
+
+    client.register(
+        &creator,
+        &id,
+        &initial_price,
+        &String::from_str(&env, "ipfs://QmEventTest"),
+        &empty_tags(&env),
+    );
+
+    client.set_price(&id, &updated_price);
+
+    // Locate the `setprice` event by its leading topic symbol so the test is
+    // robust against any other events emitted (e.g. from `register`).
+    let setprice_sym = soroban_sdk::symbol_short!("setprice");
+    let all_events = env.events().all();
+    let (_, _topics, data) = (0..all_events.len())
+        .map(|i| all_events.get(i).unwrap())
+        .find(|(_id, topics, _data)| {
+            if topics.is_empty() {
+                return false;
+            }
+            let first: soroban_sdk::Symbol =
+                soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
+            first == setprice_sym
+        })
+        .expect("setprice event not found");
+
+    // Data must deserialise to PriceUpdated with the right field values.
+    let payload = PriceUpdated::from_val(&env, &data);
+    assert_eq!(payload.id, id);
+    assert_eq!(payload.old_price, initial_price);
+    assert_eq!(payload.new_price, updated_price);
+    assert_eq!(payload.updater, creator);
+}
 
 #[test]
 fn update_metadata_changes_pointer() {
@@ -208,6 +315,140 @@ fn ownership_can_transfer() {
     let new_owner = Address::generate(&env);
     client.transfer_ownership(&id, &new_owner);
     assert_eq!(client.get(&id).creator, new_owner);
+}
+
+fn event_data_as_owners(
+    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
+    topic0_str: &str,
+) -> Option<(Address, Address)> {
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
+        if t0 != Symbol::new(&events.env(), topic0_str) {
+            continue;
+        }
+        let pair: (Address, Address) =
+            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        return Some(pair);
+    }
+    None
+}
+
+fn event_data_as_address(
+    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
+    topic0_str: &str,
+) -> Option<Address> {
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
+        if t0 != Symbol::new(&events.env(), topic0_str) {
+            continue;
+        }
+        let addr: Address = <Address as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        return Some(addr);
+    }
+    None
+}
+
+#[test]
+fn transfer_ownership_event_contains_previous_and_new_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-xfer");
+    let new_owner = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.transfer_ownership(&id, &new_owner);
+
+    let (prev, new) = event_data_as_owners(&env.events().all(), "transfer")
+        .expect("transfer event with (Address, Address) data not found");
+    assert_eq!(prev, creator);
+    assert_eq!(new, new_owner);
+}
+
+#[test]
+fn propose_transfer_event_contains_owner_and_proposed() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-propose");
+    let proposed = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &proposed);
+
+    let (owner, target) = event_data_as_owners(&env.events().all(), "propose")
+        .expect("propose event with (Address, Address) data not found");
+    assert_eq!(owner, creator);
+    assert_eq!(target, proposed);
+}
+
+#[test]
+fn accept_transfer_event_contains_previous_and_new_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-accept");
+    let new_owner = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &new_owner);
+    env.mock_all_auths();
+    client.accept_transfer(&id);
+
+    let events = env.events().all();
+    let mut last_transfer_data: Option<Val> = None;
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() == 2
+            && <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+                == Ok(Symbol::new(&env, "transfer"))
+        {
+            last_transfer_data = Some(data);
+        }
+    }
+    let accept_data = last_transfer_data.as_ref().expect("accept transfer event not found");
+    let (prev, new): (Address, Address) =
+        <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
+            .expect("accept event data should decode to (Address, Address)");
+    assert_eq!(prev, creator);
+    assert_eq!(new, new_owner);
+}
+
+#[test]
+fn cancel_transfer_event_contains_owner() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt-cancel");
+    let proposed = Address::generate(&env);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &proposed);
+    client.cancel_transfer(&id);
+
+    let owner = event_data_as_address(&env.events().all(), "cancel")
+        .expect("cancel event with Address data not found");
+    assert_eq!(owner, creator);
 }
 
 #[test]
@@ -382,6 +623,198 @@ fn set_listed_on_missing_resource_fails() {
 
     let res = client.try_set_listed(&id, &false);
     assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ---------------------------------------------------------------------------
+// Event payload tests for set_listed / delist
+// ---------------------------------------------------------------------------
+//
+// In Soroban SDK 22, `env.events().all()` returns only the events emitted
+// by the **most recent contract invocation**. Each `client.*()` call clears
+// and repopulates the buffer, so we check events immediately after the call
+// we care about.
+//
+// The `setlisted` event schema:
+//   topics: (Symbol("setlisted"), id_string)
+//   data:   (old_listed: bool, new_listed: bool)
+
+#[test]
+fn set_listed_event_emits_old_and_new_state_delist() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-delist");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Start listed=true; calling set_listed(false) should emit (true, false)
+    client.set_listed(&id, &false);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_event_emits_old_and_new_state_relist() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-relist");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Delist, then relist — check both events individually
+    client.set_listed(&id, &false);
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+
+    client.set_listed(&id, &true);
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (false, true).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_event_no_op_same_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-noop");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Set listed=true when already listed → expect (true, true)
+    client.set_listed(&id, &true);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, true).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn delist_convenience_method_emits_old_and_new_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-delist2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // delist() delegates to set_listed(false) — must emit (true, false)
+    // with the "setlisted" topic symbol (not a separate "delist" topic).
+    client.delist(&id);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_and_delist_events_are_consistent() {
+    // Both paths (set_listed(false) and delist()) must produce the same event
+    // shape. This directly tests the acceptance criterion: "Events are
+    // consistent for set_listed(false), delist, and relisting."
+    let (env, creator, client) = setup();
+    let id1 = String::from_str(&env, "ev-cons1");
+    let id2 = String::from_str(&env, "ev-cons2");
+
+    client.register(
+        &creator,
+        &id1,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id2,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Check that set_listed(false) and delist() emit identical (true, false) data.
+    client.set_listed(&id1, &false);
+    let ev_set_listed = env.events().all();
+    assert_eq!(
+        ev_set_listed,
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id1.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+
+    client.delist(&id2);
+    let ev_delist = env.events().all();
+    assert_eq!(
+        ev_delist,
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id2.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -760,6 +1193,9 @@ fn list_listed_limit_capped_at_20() {
 
     let page = client.list_listed(&0u32, &25u32);
     assert_eq!(page.len(), 20);
+}
+
+#[test]
 fn list_page_empty_is_end_of_list() {
     let (_env, _creator, client) = setup();
     let page = client.list_page(&0u32, &20u32);
@@ -901,6 +1337,99 @@ fn invalid_tag_rejected() {
     assert_eq!(client.try_set_tags(&id, &bad), Err(Ok(Error::InvalidTag)));
 }
 
+#[test]
+fn admin_transfer_nominate_then_accept() {
+    let (env, _creator, client) = setup();
+    let initial_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    // Set initial admin
+    assert_eq!(client.admin(), None);
+    client.nominate_new_admin(&initial_admin);
+    assert_eq!(client.admin(), Some(initial_admin.clone()));
+    assert_eq!(client.pending_admin(), None);
+
+    // Nominate new admin
+    client.nominate_new_admin(&new_admin);
+    assert_eq!(client.admin(), Some(initial_admin.clone()));
+    assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+    // Accept admin nomination
+    client.accept_admin(&new_admin);
+    assert_eq!(client.admin(), Some(new_admin));
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn accept_admin_rejects_wrong_caller() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    let wrong = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    client.nominate_new_admin(&pending);
+
+    assert_eq!(
+        client.try_accept_admin(&wrong),
+        Err(Ok(Error::PendingAdminNotSet))
+    );
+    assert_eq!(client.admin(), Some(admin));
+    assert_eq!(client.pending_admin(), Some(pending));
+}
+
+#[test]
+fn accept_admin_without_pending_returns_not_set() {
+    let (env, _creator, client) = setup();
+    let caller = Address::generate(&env);
+
+    assert_eq!(
+        client.try_accept_admin(&caller),
+        Err(Ok(Error::PendingAdminNotSet))
+    );
+}
+
+#[test]
+fn nominate_new_admin_rejects_same_address() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    assert_eq!(
+        client.try_nominate_new_admin(&admin),
+        Err(Ok(Error::SameAdmin))
+    );
+}
+
+#[test]
+fn nominate_new_admin_rejects_pending_already_set() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    let pending1 = Address::generate(&env);
+    let pending2 = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    client.nominate_new_admin(&pending1);
+
+    assert_eq!(
+        client.try_nominate_new_admin(&pending2),
+        Err(Ok(Error::PendingAdminAlreadySet))
+    );
+fn register_rejects_empty_metadata() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "empty-meta");
+    let metadata = String::from_str(&env, "");
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn update_metadata_rejects_empty() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "upd-empty");
 // ---------------------------------------------------------------------------
 // update_metadata event tests
 // ---------------------------------------------------------------------------
@@ -1011,6 +1540,15 @@ fn update_metadata_failed_validation_emits_no_event() {
         &creator,
         &id,
         &100i128,
+        &String::from_str(&env, "valid"),
+        &empty_tags(&env),
+    );
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_update_metadata(&id, &empty),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "valid"));
         &String::from_str(&env, "m"),
         &empty_tags(&env),
     );
@@ -1394,15 +1932,17 @@ fn creator_resource_count_zero_for_unrelated_creator() {
     // Creator B never registered anything; 0 expected.
     assert_eq!(client.creator_resource_count(&creator_b), 0);
 }
+}
 
-proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
         id_str in r"[a-zA-Z0-9_-]{1,32}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
-        meta_str in r"[a-zA-Z0-9:/\\._-]{0,512}",
-        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{0,512}",
+        meta_str in r"[a-zA-Z0-9:/\\._-]{1,512}",
+        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,512}",
         listed in any::<bool>(),
     ) {
         let env = Env::default();
@@ -1415,33 +1955,27 @@ proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
         let metadata = String::from_str(&env, &format!("ipfs://{}", meta_str));
         let metadata_2 = String::from_str(&env, &format!("https://{}", meta_str_2));
 
-        // 1. Register resource with initial metadata
         client.register(&creator, &id, &price, &metadata, &empty_tags(&env));
 
-        // 2. Get and verify metadata is identical
         let r = client.get(&id);
         assert_eq!(r.metadata, metadata);
         assert_eq!(r.price, price);
         assert_eq!(r.creator, creator);
         assert!(r.listed);
 
-        // 3. Update metadata
         client.update_metadata(&id, &metadata_2);
 
-        // 4. Verify updated metadata is identical and other fields preserved
         let r2 = client.get(&id);
         assert_eq!(r2.metadata, metadata_2);
         assert_eq!(r2.price, price);
         assert_eq!(r2.creator, creator);
         assert!(r2.listed);
 
-        // 5. Update price and verify metadata is unaffected
         client.set_price(&id, &price_2);
         let r3 = client.get(&id);
         assert_eq!(r3.metadata, metadata_2);
         assert_eq!(r3.price, price_2);
 
-        // 6. Update listing status and verify metadata is unaffected
         client.set_listed(&id, &listed);
         let r4 = client.get(&id);
         assert_eq!(r4.metadata, metadata_2);
@@ -1449,6 +1983,121 @@ proptest! {    #![proptest_config(ProptestConfig::with_cases(50))]
     }
 }
 
+// ── Tag removal event semantics (#362) ──────────────────────────────────────
+
+#[test]
+fn set_tags_event_includes_prev_and_next() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "event-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with initial tags
+    let initial_tags = tags(&env, &["data", "research"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Replace with new tags
+    let new_tags = tags(&env, &["finance", "api"]);
+    client.set_tags(&id, &new_tags);
+    
+    // Verify event contains both prev and next tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    
+    // Event structure: (contract_address, topics_vec, data)
+    // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
+    let (_contract, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    // Decode topics: [symbol_short!("settags"), id]
+    assert_eq!(topics.len(), 2);
+    
+    // Decode data as tuple: (prev_tags, new_tags)
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    
+    assert_eq!(prev_tags.len(), 2);
+    assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
+    
+    assert_eq!(next_tags.len(), 2);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
+    assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "api"));
+}
+
+#[test]
+fn set_tags_event_supports_tag_removal() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "removal-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with multiple tags
+    let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Clear all tags
+    let empty = empty_tags(&env);
+    client.set_tags(&id, &empty);
+    
+    // Verify event shows previous tags and empty next tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 3);
+    assert_eq!(next_tags.len(), 0);
+}
+
+#[test]
+fn set_tags_event_supports_tag_addition() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "addition-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with no tags
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    
+    // Add tags
+    let new_tags = tags(&env, &["first", "second"]);
+    client.set_tags(&id, &new_tags);
+    
+    // Verify event shows empty previous and new tags
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 0);
+    assert_eq!(next_tags.len(), 2);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "first"));
+}
+
+#[test]
+fn set_tags_event_on_replacement() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "replace-test");
+    let metadata = String::from_str(&env, "m");
+    
+    // Register with initial tags
+    let initial_tags = tags(&env, &["old1", "old2"]);
+    client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    
+    // Replace completely with different tags
+    let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
+    client.set_tags(&id, &replacement_tags);
+    
+    // Verify event shows complete replacement
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
+    
+    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    assert_eq!(prev_tags.len(), 2);
+    assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
+    
+    assert_eq!(next_tags.len(), 3);
+    assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "new1"));
+    assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "new2"));
+    assert_eq!(next_tags.get(2).unwrap(), String::from_str(&env, "new3"));
 #[test]
 fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();
@@ -1482,4 +2131,32 @@ fn set_terms_hash_rejects_over_max_length() {
         client.try_get_terms_hash(&creator),
         Err(Ok(Error::NotFound))
     );
+}
+
+#[test]
+fn initialize_sets_admin() {
+    let (env, creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn initialize_duplicate_rejected() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let other = Address::generate(&env);
+    assert_eq!(
+        client.try_initialize(&other),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+    // Original admin preserved.
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn admin_uninitialized_returns_not_found() {
+    let (_env, _creator, client) = setup();
+    assert_eq!(client.try_admin(), Err(Ok(Error::NotFound)));
 }
