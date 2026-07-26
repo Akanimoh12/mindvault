@@ -4,6 +4,7 @@ use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+    Address, Env, IntoVal, String, Vec,
     Address, Env, String, TryFromVal, Vec,
 };
 
@@ -422,6 +423,198 @@ fn set_listed_on_missing_resource_fails() {
 
     let res = client.try_set_listed(&id, &false);
     assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ---------------------------------------------------------------------------
+// Event payload tests for set_listed / delist
+// ---------------------------------------------------------------------------
+//
+// In Soroban SDK 22, `env.events().all()` returns only the events emitted
+// by the **most recent contract invocation**. Each `client.*()` call clears
+// and repopulates the buffer, so we check events immediately after the call
+// we care about.
+//
+// The `setlisted` event schema:
+//   topics: (Symbol("setlisted"), id_string)
+//   data:   (old_listed: bool, new_listed: bool)
+
+#[test]
+fn set_listed_event_emits_old_and_new_state_delist() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-delist");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Start listed=true; calling set_listed(false) should emit (true, false)
+    client.set_listed(&id, &false);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_event_emits_old_and_new_state_relist() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-relist");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Delist, then relist — check both events individually
+    client.set_listed(&id, &false);
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+
+    client.set_listed(&id, &true);
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (false, true).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_event_no_op_same_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-noop");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Set listed=true when already listed → expect (true, true)
+    client.set_listed(&id, &true);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, true).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn delist_convenience_method_emits_old_and_new_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ev-delist2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // delist() delegates to set_listed(false) — must emit (true, false)
+    // with the "setlisted" topic symbol (not a separate "delist" topic).
+    client.delist(&id);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn set_listed_and_delist_events_are_consistent() {
+    // Both paths (set_listed(false) and delist()) must produce the same event
+    // shape. This directly tests the acceptance criterion: "Events are
+    // consistent for set_listed(false), delist, and relisting."
+    let (env, creator, client) = setup();
+    let id1 = String::from_str(&env, "ev-cons1");
+    let id2 = String::from_str(&env, "ev-cons2");
+
+    client.register(
+        &creator,
+        &id1,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id2,
+        &100i128,
+        &String::from_str(&env, "m"),
+        &empty_tags(&env),
+    );
+
+    // Check that set_listed(false) and delist() emit identical (true, false) data.
+    client.set_listed(&id1, &false);
+    let ev_set_listed = env.events().all();
+    assert_eq!(
+        ev_set_listed,
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id1.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
+
+    client.delist(&id2);
+    let ev_delist = env.events().all();
+    assert_eq!(
+        ev_delist,
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("setlisted"), id2.clone()).into_val(&env),
+                (true, false).into_val(&env),
+            ),
+        ]
+    );
 }
 
 #[test]

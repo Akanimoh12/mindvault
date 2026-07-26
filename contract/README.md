@@ -91,9 +91,22 @@ All events use the topic `(symbol, id)` (or `(symbol,)` for admin actions).
 | `setprice` | `new_price: i128` | `set_price()` succeeds |
 | `updmeta` | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds |
 | `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
-| `setlisted` | `listed: bool` | `set_listed()` (and `delist()`) succeeds |
+| `setlisted` | `(old_listed: bool, new_listed: bool)` | `set_listed()` (and `delist()`) succeeds |
 | `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
 
+The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
+listeners can determine the transition direction without querying additional state:
+
+| Transition | `(old, new)` |
+|------------|-------------|
+| Delist (was listed) | `(true, false)` |
+| Relist (was delisted) | `(false, true)` |
+| No-op relist | `(true, true)` |
+| No-op delist | `(false, false)` |
+
+Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
+event — `delist` is a thin convenience wrapper that calls `set_listed`. The event
+is emitted even when the new value equals the old value.
 The `updmeta` event carries structured data so that off-chain indexers can build
 a full audit trail without querying historical ledger state:
 
