@@ -173,7 +173,7 @@ impl VaultRegistry {
         Self::set_creator_count(&env, &creator, cur + 1);
 
         env.events()
-            .publish((symbol_short!("register"), creator), id);
+            .publish((symbol_short!("register"), creator), resource);
         Ok(())
     }
 
