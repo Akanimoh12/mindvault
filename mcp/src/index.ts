@@ -90,15 +90,6 @@ const NETWORK: X402Network = normalizeX402Network(
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
 
-/** Snapshot (and optionally reset) opt-in tool metrics. Never includes secrets. */
-function toolMetrics(reset: boolean): string {
-  const snap = metrics.snapshot();
-  if (reset) metrics.reset();
-  if (!snap.enabled) {
-    return "Metrics disabled. Set MINDVAULT_METRICS=1 on the server to enable.";
-  }
-  return JSON.stringify(snap, null, 2);
-}
 // Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
 // call and the on-chain registry lookup are served from deterministic in-memory
 // fixtures — no live backend, funded wallet, or network access required. All
@@ -420,6 +411,19 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
   } catch {
     return "0";
   }
+}
+
+/** Fetch an account's USDC and native (XLM) balances from Horizon. */
+async function getAccountBalances(
+  publicKey: string,
+): Promise<{ usdc: string; native: string; funded: boolean }> {
+  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
+  if (!res.ok) return { usdc: "0", native: "0", funded: false };
+  const data: any = await res.json();
+  const balances: any[] = data.balances ?? [];
+  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
+  const native = balances.find((b) => b.asset_type === "native");
+  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
 }
 
 function formatResource(r: any): string {
@@ -1845,6 +1849,9 @@ async function dispatchTool(name: string, args: any): Promise<string> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   try {
+    // Errors thrown by tools (and by measureTool's re-throw) become a deterministic
+    // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
+    // stripped via safeErrorMessage. Clients should treat that shape as failure.
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
@@ -1870,6 +1877,11 @@ if (!process.env.VITEST && !MOCK) {
       /* offline or unreachable — the mindvault_check_bindings tool can report details */
     });
 }
+
+// Connect stdio when running as a real MCP process. Under Vitest the integration
+// harness (and unit tests) import this module and wire an in-memory transport
+// instead — connecting stdio here would hang the test runner on stdin.
+export { server };
 
 if (!process.env.VITEST) {
   const transport = new StdioServerTransport();

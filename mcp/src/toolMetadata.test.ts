@@ -5,12 +5,17 @@
  * complete. Snapshots capture the shape of the most commonly used tools
  * (mindvault_search, mindvault_publish) to prevent regressions when updating
  * descriptions or examples.
+ *
+ * Full ListTools coverage through the SDK lives in `integration.test.ts`.
  */
 import { describe, it, expect } from "vitest";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", async () => {
     // Inline the expected tool names from index.ts for validation:
+  it("all tools have required fields", () => {
+    // Inline expected tool names from index.ts for snapshot validation.
+    // Integration tests assert the live ListTools response via the SDK harness.
     const expectedToolNames = [
       "mindvault_setup_wallet",
       "mindvault_wallet_info",
@@ -26,10 +31,14 @@ describe("MCP tool metadata", () => {
       "mindvault_register_onchain",
       "mindvault_agent_status",
       "mindvault_registry_info",
+      "mindvault_network_profile",
       "mindvault_check_bindings",
+      "mindvault_check_consistency",
       "mindvault_registry_lookup",
       "mindvault_tx_status",
       "mindvault_reset",
+      "mindvault_backup_state",
+      "mindvault_restore_state",
       "mindvault_metrics",
     ];
 
