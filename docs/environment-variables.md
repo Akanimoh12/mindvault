@@ -106,6 +106,17 @@ All other variables are either public addresses or non-sensitive configuration. 
 
 ---
 
+## MCP
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `STELLAR_NETWORK` | no | `testnet` | MCP deployment target (`testnet` or `mainnet` / `pubnet` / `public`). |
+| `MINDVAULT_ALLOW_MAINNET` | no | unset | Set to `1` / `true` to allow gated MCP mutations and buys on mainnet without per-call `confirmMainnet`. |
+
+On mainnet, MCP tools that mutate state or spend funds (`mindvault_buy`, `mindvault_publish`, `mindvault_register`, `mindvault_register_onchain`, `mindvault_setup_wallet`, `mindvault_reset`) require either `confirmMainnet: true` on the tool call or `MINDVAULT_ALLOW_MAINNET=1`. Read-only tools are unrestricted. See [`mainnet-deployment-checklist.md`](./mainnet-deployment-checklist.md#mcp-mainnet-guardrails).
+
+---
+
 ## Mainnet-Specific Notes
 
 When deploying to mainnet, change:
