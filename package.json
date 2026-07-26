@@ -67,7 +67,11 @@
       "hono": "^4.12.25",
       "@opentelemetry/sdk-node": "^0.217.0",
       "@opentelemetry/core": "^2.8.0",
-      "protobufjs": "^8.4.1"
+      "@opentelemetry/propagator-jaeger": "^2.9.0",
+      "protobufjs": "^8.4.1",
+      "brace-expansion": "^2.1.2",
+      "js-yaml": "^4.3.0",
+      "fast-uri": "^3.1.4"
     }
   }
 }

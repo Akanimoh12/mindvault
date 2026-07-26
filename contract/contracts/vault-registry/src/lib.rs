@@ -73,6 +73,19 @@ pub struct MetadataUpdateEvent {
     pub new_metadata: String,
 }
 
+/// Structured payload published with the `setprice` event.
+/// Includes the resource id, the price before and after the update, and the
+/// address that authorised the change — enabling indexers to reconcile price
+/// history without re-reading contract storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceUpdated {
+    pub id: String,
+    pub old_price: i128,
+    pub new_price: i128,
+    pub updater: Address,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -149,6 +162,9 @@ impl VaultRegistry {
     }
 
     /// Update a resource's price. Only the creator may call this.
+    ///
+    /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
+    /// containing `id`, `old_price`, `new_price`, and `updater`.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         if new_price <= 0 {
@@ -156,10 +172,19 @@ impl VaultRegistry {
         }
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        let old_price = resource.price;
+        let updater = resource.creator.clone();
         resource.price = new_price;
         Self::save(&env, &resource);
-        env.events()
-            .publish((symbol_short!("setprice"), id), new_price);
+        env.events().publish(
+            (symbol_short!("setprice"),),
+            PriceUpdated {
+                id,
+                old_price,
+                new_price,
+                updater,
+            },
+        );
         Ok(())
     }
 
