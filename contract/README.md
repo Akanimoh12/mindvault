@@ -190,21 +190,6 @@ pub struct MetadataUpdateEvent {
 The `settags` event emits both previous and next tags, enabling indexers
 to detect tag removals and reconcile state changes without requiring full history
 scans.
-| `propose` | `(current_owner: Address, proposed_owner: Address)` | `propose_transfer()` succeeds |
-| `cancel` | `owner: Address` | `cancel_transfer()` succeeds |
-| `setlisted` | `(old_listed: bool, new_listed: bool)` | `set_listed()` (and `delist()`) succeeds — emitted even on a no-op transition |
-| `setadmin` | `new_admin: Address` | First-ever `nominate_new_admin()` call (bootstrap) |
-| `nomadmin` | `new_admin: Address` | Subsequent `nominate_new_admin()` calls |
-| `accadmin` | `new_admin: Address` | `accept_admin()` succeeds |
-| `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
-| `freeze` | `()` | `freeze_metadata()` succeeds |
-| `verify` | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds |
-| `addverif` | `true` | `add_verifier()` succeeds |
-| `rmverif` | `false` | `remove_verifier()` succeeds |
-| `reindex` | `new_count: u32` (topic carries `old_count: u32`) | `repair_index()` succeeds |
-
-Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted` event
-— `delist` is a thin convenience wrapper around `set_listed`.
 
 ### Price units
 
