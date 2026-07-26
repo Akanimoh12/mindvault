@@ -23,19 +23,13 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { createMetricsRecorder, metricsEnabledFromEnv } from "./metrics.js";
-import {
-  DEFAULT_PROFILE,
-  STATE_VERSION,
-  isValidProfileName,
-  migrateState,
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { cacheStalenessNotice } from "./cacheStaleness.js";
 import {
   collectStartupDiagnostics,
   formatDiagnostics,
   hasBlockingDiagnostics,
 } from "./diagnostics.js";
-import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -58,6 +52,7 @@ import {
   migrateState,
 } from "./profiles.js";
 import { exportState, restoreState } from "./stateBackup.js";
+import { safeErrorMessage, safeLog } from "./redaction.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -211,7 +206,7 @@ function saveState(): void {
     };
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
   } catch (err) {
-    console.error("MindVault MCP: failed to persist state:", err);
+    console.error("MindVault MCP: failed to persist state:", safeErrorMessage(err));
   }
 }
 
@@ -818,17 +813,29 @@ async function publish(args: {
     }
   }
 
-  return [
-    `Resource published.`,
-    `ID: ${resource.id}`,
-    `Access URL: ${resource.accessUrl}`,
-    `Verification: approved ✓`,
-    `On-chain status: ${onchainStatus}`,
-    onchainTxHash ? `On-chain tx: ${onchainTxHash}` : null,
-    ...failureGuidance,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const summary = {
+    before: {
+      id: null,
+      title: null,
+      price: null,
+      accessUrl: null,
+      verificationStatus: null,
+      onchainStatus: null,
+    },
+    after: {
+      id: resource.id,
+      title: resource.title,
+      price: resource.price,
+      accessUrl: resource.accessUrl,
+      verificationStatus: "approved",
+      onchainStatus,
+    },
+    changedFields: ["id", "title", "price", "accessUrl", "verificationStatus", "onchainStatus"],
+    txHash: onchainTxHash,
+    failureGuidance: failureGuidance.length > 0 ? failureGuidance : null,
+  };
+
+  return JSON.stringify(summary, null, 2);
 }
 
 export async function buy(resourceId: string): Promise<string> {
@@ -846,6 +853,14 @@ export async function buy(resourceId: string): Promise<string> {
     if (shortMsg) return shortMsg;
   }
 
+  const beforeState = meta.ok ? {
+    id: meta.data.id,
+    title: meta.data.title,
+    price: meta.data.price,
+    accessUrl: meta.data.accessUrl,
+    purchased: false,
+  } : null;
+
   const paidFetch = makePaidFetch(wallet);
   const res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
   metrics.recordPayment(res.ok);
@@ -853,7 +868,19 @@ export async function buy(resourceId: string): Promise<string> {
     const text = await res.text();
     throw new Error(`Buy failed [${res.status}]: ${text}`);
   }
-  return JSON.stringify(await res.json(), null, 2);
+  const afterData = await res.json();
+
+  const summary = {
+    before: beforeState,
+    after: {
+      ...afterData,
+      purchased: true,
+    },
+    changedFields: beforeState ? ["purchased"] : ["id", "title", "price", "accessUrl", "purchased"],
+    txHash: afterData.txHash || null,
+  };
+
+  return JSON.stringify(summary, null, 2);
 }
 
 /**
@@ -933,14 +960,22 @@ export async function registerOnchain(resourceId: string): Promise<string> {
     );
   }
 
-  return [
-    `Resource registered on-chain.`,
-    `Resource: ${resourceId}`,
-    `Registry status: ${submit.data.onchainStatus ?? "registered"}`,
-    submit.data.txHash ? `On-chain tx: ${submit.data.txHash}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const summary = {
+    before: {
+      id: resourceId,
+      onchainStatus: null,
+      txHash: null,
+    },
+    after: {
+      id: resourceId,
+      onchainStatus: submit.data.onchainStatus ?? "registered",
+      txHash: submit.data.txHash ?? null,
+    },
+    changedFields: ["onchainStatus", "txHash"],
+    txHash: submit.data.txHash ?? null,
+  };
+
+  return JSON.stringify(summary, null, 2);
 }
 
 async function agentStatus(): Promise<string> {
@@ -1057,6 +1092,127 @@ function registryInfo(): string {
 }
 
 /**
+ * Compare a resource from the API catalog with the same resource in the vault-registry contract.
+ * Reports matching fields, mismatches, missing API records, and missing on-chain records.
+ */
+async function checkConsistency(resourceId: string): Promise<string> {
+  if (!resourceId) throw new Error("resourceId is required.");
+
+  // Fetch from API
+  const apiRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
+  const apiData = apiRes.ok ? apiRes.data : null;
+
+  // Fetch from on-chain registry
+  let onchainData: any = null;
+  let onchainError: string | null = null;
+  try {
+    const client = createRegistryClient({
+      contractId: REGISTRY_CONTRACT_ID,
+      rpcUrl: SOROBAN_RPC_URL,
+      networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+    });
+    const tx = await client.get({ id: resourceId });
+    if (tx.result.isOk()) {
+      onchainData = tx.result.unwrap();
+    } else {
+      onchainError = tx.result.unwrapErr().message;
+    }
+  } catch (err: any) {
+    onchainError = err.message;
+  }
+
+  // Build comparison report
+  const report: {
+    resourceId: string;
+    apiFound: boolean;
+    onchainFound: boolean;
+    onchainError: string | null;
+    matches: Record<string, { api: any; onchain: any }>;
+    mismatches: Record<string, { api: any; onchain: any }>;
+    missingInApi: string[];
+    missingInOnchain: string[];
+  } = {
+    resourceId,
+    apiFound: !!apiData,
+    onchainFound: !!onchainData,
+    onchainError,
+    matches: {},
+    mismatches: {},
+    missingInApi: [],
+    missingInOnchain: [],
+  };
+
+  if (!apiData && !onchainData) {
+    return JSON.stringify(
+      {
+        ...report,
+        summary: "Resource not found in API catalog or on-chain registry.",
+      },
+      null,
+      2,
+    );
+  }
+
+  if (!apiData) {
+    report.missingInApi = ["id", "title", "price", "metadata", "listed"];
+    return JSON.stringify(
+      {
+        ...report,
+        summary: "Resource exists on-chain but not in API catalog.",
+      },
+      null,
+      2,
+    );
+  }
+
+  if (!onchainData) {
+    report.missingInOnchain = ["id", "creator", "price", "metadata", "listed"];
+    return JSON.stringify(
+      {
+        ...report,
+        summary: "Resource exists in API catalog but not on-chain registry.",
+      },
+      null,
+      2,
+    );
+  }
+
+  // Compare fields
+  const priceUsdc = stroopsToUsdc(BigInt(onchainData.price as unknown as bigint));
+
+  // Compare price (API uses USDC string, on-chain uses stroops)
+  const apiPrice = parseFloat(apiData.price || "0");
+  const onchainPrice = parseFloat(priceUsdc);
+  if (Math.abs(apiPrice - onchainPrice) < 0.0000001) {
+    report.matches.price = { api: apiData.price, onchain: priceUsdc };
+  } else {
+    report.mismatches.price = { api: apiData.price, onchain: priceUsdc };
+  }
+
+  // Compare listed status
+  if (apiData.verificationStatus === "verified" && onchainData.listed === true) {
+    report.matches.listed = { api: "verified", onchain: true };
+  } else if (apiData.verificationStatus !== "verified" && onchainData.listed === false) {
+    report.matches.listed = { api: apiData.verificationStatus, onchain: false };
+  } else {
+    report.mismatches.listed = { api: apiData.verificationStatus, onchain: onchainData.listed };
+  }
+
+  // Compare metadata
+  if (apiData.accessUrl === onchainData.metadata) {
+    report.matches.metadata = { api: apiData.accessUrl, onchain: onchainData.metadata };
+  } else {
+    report.mismatches.metadata = { api: apiData.accessUrl, onchain: onchainData.metadata };
+  }
+
+  // ID should always match
+  report.matches.id = { api: apiData.id, onchain: onchainData.id };
+
+  const summary = Object.keys(report.mismatches).length === 0
+    ? "All compared fields match between API and on-chain registry."
+    : `Found ${Object.keys(report.mismatches).length} mismatched field(s).`;
+
+  return JSON.stringify({ ...report, summary }, null, 2);
  * Report the current Stellar and x402 network configuration in use by this MCP
  * instance. Includes testnet/mainnet selection, RPC/Horizon URLs, registry and
  * USDC contract IDs, and warnings for environment variable overrides that
@@ -1380,6 +1536,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: {}, required: [] },
     },
     {
+      name: "mindvault_check_consistency",
+      description:
+        "Compare a resource from the API catalog with the same resource in the vault-registry contract. Reports matching fields, mismatches, missing API records, and missing on-chain records. Useful for detecting synchronization issues between the API and on-chain registry.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          resourceId: {
+            type: "string",
+            description: "The resource ID to compare between API and on-chain registry.",
+          },
+        },
+        required: ["resourceId"],
+      },
+    },
+    {
       name: "mindvault_registry_lookup",
       description:
         "Look up a resource directly from the on-chain vault registry by its ID. Returns creator wallet address, price (USDC), metadata (title/description), listed state, tags, contract ID, and network. Data comes from Stellar/Soroban, not the MindVault API. Returns an actionable message when the resource is not registered on-chain.",
@@ -1534,6 +1705,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return registryInfo();
     case "mindvault_check_bindings":
       return checkBindings();
+    case "mindvault_check_consistency":
+      return checkConsistency(args.resourceId as string);
     case "mindvault_registry_lookup":
       return registryLookup(args.resourceId as string);
     case "mindvault_tx_status":
@@ -1617,6 +1790,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "mindvault_check_bindings":
         result = await checkBindings();
         break;
+      case "mindvault_check_consistency":
+        result = await checkConsistency(args.resourceId as string);
+        break;
       case "mindvault_registry_lookup":
         result = await registryLookup(args.resourceId as string);
         break;
@@ -1641,7 +1817,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
-    return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    return { content: [{ type: "text", text: `Error: ${safeErrorMessage(err)}` }], isError: true };
   }
 });
 

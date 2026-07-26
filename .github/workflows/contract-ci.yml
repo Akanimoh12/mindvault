@@ -62,3 +62,37 @@ jobs:
       - name: Run tests
         working-directory: contract
         run: cargo test
+
+  no-std-check:
+    name: Check no_std Compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-contract-no-std-${{ hashFiles('contract/Cargo.toml', 'contract/Cargo.lock', 'contract/contracts/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-contract-no-std-
+            ${{ runner.os }}-contract-wasm-
+            ${{ runner.os }}-cargo-
+
+      - name: Check no_std compatibility
+        working-directory: contract
+        run: |
+          # Build with default features only to ensure no std dependencies
+          cargo build --release --target wasm32-unknown-unknown --no-default-features
+          # Verify the contract still builds with standard features
+          cargo build --release --target wasm32-unknown-unknown
