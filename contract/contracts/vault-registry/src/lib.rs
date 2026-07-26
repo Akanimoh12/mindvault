@@ -58,6 +58,8 @@ pub enum DataKey {
     Resource(String),
     Count,
     Index(u32),
+    Admin,
+    PendingAdmin,
     CreatorTerms(Address),
 }
 
@@ -95,6 +97,10 @@ pub enum Error {
     InvalidPrice = 3,
     MetadataTooLong = 4,
     InvalidTag = 5,
+    Unauthorized = 6,
+    PendingAdminNotSet = 7,
+    PendingAdminAlreadySet = 8,
+    SameAdmin = 9,
     TermsHashTooLong = 6,
 }
 
@@ -474,6 +480,72 @@ impl VaultRegistry {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
 
+    /// Current contract admin.
+    pub fn admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Pending nominated contract admin.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Nominate a new contract admin. Only the current admin may call this.
+    /// Sets `pending_admin`. The nomination does not take effect until
+    /// the pending admin calls `accept_admin`.
+    pub fn nominate_new_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            new_admin.require_auth();
+            env.storage().instance().set(&DataKey::Admin, &new_admin);
+            Self::bump_instance(&env);
+            env.events()
+                .publish((symbol_short!("setadmin"),), new_admin);
+            return Ok(());
+        }
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap();
+        stored_admin.require_auth();
+
+        if new_admin == stored_admin {
+            return Err(Error::SameAdmin);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::PendingAdminAlreadySet);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("nomadmin"),), new_admin);
+        Ok(())
+    }
+
+    /// Accept the pending admin nomination and become the contract admin.
+    /// Only the pending admin may call this.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let stored_pending: Address = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+            .ok_or(Error::PendingAdminNotSet)?;
+
+        if stored_pending != new_admin {
+            return Err(Error::PendingAdminNotSet);
+        }
+
+        new_admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("accadmin"),), new_admin);
+        Ok(())
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();

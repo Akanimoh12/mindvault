@@ -942,6 +942,83 @@ fn invalid_tag_rejected() {
 }
 
 #[test]
+fn admin_transfer_nominate_then_accept() {
+    let (env, _creator, client) = setup();
+    let initial_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    // Set initial admin
+    assert_eq!(client.admin(), None);
+    client.nominate_new_admin(&initial_admin);
+    assert_eq!(client.admin(), Some(initial_admin.clone()));
+    assert_eq!(client.pending_admin(), None);
+
+    // Nominate new admin
+    client.nominate_new_admin(&new_admin);
+    assert_eq!(client.admin(), Some(initial_admin.clone()));
+    assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+    // Accept admin nomination
+    client.accept_admin(&new_admin);
+    assert_eq!(client.admin(), Some(new_admin));
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn accept_admin_rejects_wrong_caller() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    let wrong = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    client.nominate_new_admin(&pending);
+
+    assert_eq!(
+        client.try_accept_admin(&wrong),
+        Err(Ok(Error::PendingAdminNotSet))
+    );
+    assert_eq!(client.admin(), Some(admin));
+    assert_eq!(client.pending_admin(), Some(pending));
+}
+
+#[test]
+fn accept_admin_without_pending_returns_not_set() {
+    let (env, _creator, client) = setup();
+    let caller = Address::generate(&env);
+
+    assert_eq!(
+        client.try_accept_admin(&caller),
+        Err(Ok(Error::PendingAdminNotSet))
+    );
+}
+
+#[test]
+fn nominate_new_admin_rejects_same_address() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    assert_eq!(
+        client.try_nominate_new_admin(&admin),
+        Err(Ok(Error::SameAdmin))
+    );
+}
+
+#[test]
+fn nominate_new_admin_rejects_pending_already_set() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+    let pending1 = Address::generate(&env);
+    let pending2 = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+    client.nominate_new_admin(&pending1);
+
+    assert_eq!(
+        client.try_nominate_new_admin(&pending2),
+        Err(Ok(Error::PendingAdminAlreadySet))
+    );
 fn register_rejects_empty_metadata() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "empty-meta");
