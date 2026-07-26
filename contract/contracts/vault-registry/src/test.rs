@@ -944,11 +944,6 @@ fn update_metadata_rejects_over_max_length() {
 // respectively, since "a" matches no supported pointer prefix) — see
 // `register_rejects_empty_metadata`, `update_metadata_rejects_empty`, and
 // `invalid_metadata_pointer_rejected` below.
-    assert_eq!(
-        client.get(&id).metadata,
-        String::from_str(&env, "ar://short")
-    );
-}
 
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
