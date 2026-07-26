@@ -2,12 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import {
-  exportState,
-  restoreState,
-  StateBackupError,
-  readPersistedState,
-} from "./stateBackup.js";
+import { exportState, restoreState, StateBackupError, readPersistedState } from "./stateBackup.js";
 import { STATE_VERSION, type ProfileState } from "./profiles.js";
 
 const STATE_DIR = join(homedir(), ".mindvault");
@@ -94,8 +89,7 @@ describe("stateBackup", () => {
     const parts = blob.split(":");
     // flip last char of ciphertext
     const last = parts[3];
-    const flipped =
-      last.slice(0, -1) + (last.endsWith("A") ? "B" : "A");
+    const flipped = last.slice(0, -1) + (last.endsWith("A") ? "B" : "A");
     const tampered = `${parts[0]}:${parts[1]}:${parts[2]}:${flipped}`;
     let wrote = false;
     expect(() =>
