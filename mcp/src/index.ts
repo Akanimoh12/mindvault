@@ -968,6 +968,31 @@ export async function buy(resourceId: string): Promise<string> {
     throw new Error(`Buy failed [${res.status}]: ${text}`);
   }
   const afterData = await res.json();
+  const txHash = afterData.txHash || null;
+  const receipt =
+    afterData.receipt && typeof afterData.receipt === "object" ? afterData.receipt : null;
+  const amount =
+    (receipt?.amount != null ? String(receipt.amount) : null) ??
+    (meta.ok && meta.data?.price != null ? String(meta.data.price) : null) ??
+    (afterData.price != null ? String(afterData.price) : "");
+  const title =
+    (typeof afterData.title === "string" && afterData.title) ||
+    (meta.ok && typeof meta.data?.title === "string" ? meta.data.title : undefined);
+
+  // Persist a local receipt so mindvault_purchase_history can list prior buys.
+  // Recording failures must not fail the successful purchase response.
+  try {
+    recordPurchase({
+      resourceId,
+      amount,
+      network: NETWORK,
+      txHash,
+      receiptRef: receipt?.paymentId != null ? String(receipt.paymentId) : null,
+      ...(title ? { title } : {}),
+    });
+  } catch (err) {
+    console.error("MindVault MCP: failed to persist purchase receipt:", safeErrorMessage(err));
+  }
 
   const summary = {
     before: beforeState,
@@ -976,7 +1001,7 @@ export async function buy(resourceId: string): Promise<string> {
       purchased: true,
     },
     changedFields: beforeState ? ["purchased"] : ["id", "title", "price", "accessUrl", "purchased"],
-    txHash: afterData.txHash || null,
+    txHash,
   };
 
   return JSON.stringify(summary, null, 2);
@@ -1625,6 +1650,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "mindvault_purchase_history",
+      description:
+        "List locally persisted purchase receipts from successful mindvault_buy calls (~/.mindvault/purchases.json). Read-only. Optional filters: resourceId and network (exact match, e.g. stellar:testnet). Returns count + purchases (newest first), or an empty list when nothing matches.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          resourceId: {
+            type: "string",
+            description: "Optional. Only return receipts for this resource id. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001"],
+          },
+          network: {
+            type: "string",
+            description:
+              "Optional. Only return receipts recorded on this x402 network id. Example: 'stellar:testnet'",
+            examples: ["stellar:testnet", "stellar:pubnet"],
+          },
+        },
+        required: [],
+      },
+    },
+    {
       name: "mindvault_register_onchain",
       description:
         "Register an already-published, verified resource on the vault registry contract. Use this to retry on-chain registration after mindvault_publish reports the on-chain step failed. Prepares the unsigned transaction, signs it with the agent wallet (which must be the resource creator), submits it, and returns the registry status and on-chain tx hash.",
@@ -1840,6 +1887,8 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       });
     case "mindvault_buy":
       return buy(args.resourceId as string);
+    case "mindvault_purchase_history":
+      return purchaseHistoryTool(args as Record<string, unknown>);
     case "mindvault_register_onchain":
       return registerOnchain(args.resourceId as string);
     case "mindvault_agent_status":

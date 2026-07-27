@@ -192,9 +192,23 @@ Pays the resource price in USDC via x402 and returns the protected content.
 
 > Troubleshooting: a `402 Payment Required` after `buy` means the payment didn't settle — usually insufficient USDC. Run `mindvault_wallet_info` to check the balance.
 
+Successful buys also append a local receipt under `~/.mindvault/purchases.json` for later inspection via `mindvault_purchase_history`.
+
 ---
 
-### 12. `mindvault_register_onchain`
+### 12. `mindvault_purchase_history`
+
+Read-only list of locally persisted purchase receipts. Optional filters:
+
+```json
+{ "resourceId": "abc123", "network": "stellar:testnet" }
+```
+
+Returns `{ count, purchases }` (newest first). Empty history returns `count: 0` with a clear message — invalid filter types raise a deterministic error.
+
+---
+
+### 13. `mindvault_register_onchain`
 
 Registers an already-published, verified resource on the vault-registry contract.
 `mindvault_publish` attempts this automatically, but if the on-chain step fails

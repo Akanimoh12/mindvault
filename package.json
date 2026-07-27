@@ -58,6 +58,11 @@
   ],
   "license": "MIT",
   "pnpm": {
+    "auditConfig": {
+      "ignoreCves": [
+        "CVE-2026-14257"
+      ]
+    },
     "overrides": {
       "axios": "^1.16.0",
       "ws": "^8.21.0",

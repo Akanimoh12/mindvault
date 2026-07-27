@@ -81,6 +81,7 @@ describe("isMainnetGatedTool", () => {
       "mindvault_check_bindings",
       "mindvault_agent_status",
       "mindvault_metrics",
+      "mindvault_purchase_history",
     ]) {
       expect(isMainnetGatedTool(t)).toBe(false);
     }

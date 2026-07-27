@@ -590,6 +590,10 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
 
     const result = await buy("res-001");
     const parsed = JSON.parse(result);
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
+    expect(parsed.changedFields).toContain("purchased");
     expect(parsed).toHaveProperty("after");
     expect(parsed.after).toHaveProperty("id", "res-001");
     expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
