@@ -243,10 +243,6 @@ function isSorobanRpc(body: string): boolean {
   return parsed?.jsonrpc === "2.0" && typeof parsed?.method === "string";
 }
 
-/**
- * Stand-in for the on-chain registry client's lookup. Returns the same JSON
- * shape as the live path so agents see identical output in mock mode.
- */
 export function mockRegistryLookup(resourceId: string, contractId: string): string {
   const seeded: Record<string, { creator: string; price: string; metadata: string }> = {
     "mock-1": { creator: "GMOCKCREATOR1", price: "1.5000000", metadata: "Intro to Stellar" },
@@ -276,6 +272,113 @@ export function mockRegistryLookup(resourceId: string, contractId: string): stri
       metadata: hit.metadata,
       listed: true,
       tags: [],
+      contract: contractId,
+    },
+    null,
+    2,
+  );
+}
+
+export function mockUpdateMetadata(resourceId: string, metadata: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      metadata,
+      txHash: `MOCK_TX_UPDATE_META_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockSetPrice(resourceId: string, price: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      price,
+      txHash: `MOCK_TX_SET_PRICE_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockTransferOwnership(resourceId: string, newCreator: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      newCreator,
+      txHash: `MOCK_TX_TRANSFER_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockSetListed(resourceId: string, listed: boolean): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      listed,
+      txHash: `MOCK_TX_SET_LISTED_${resourceId}`,
+      source: "on-chain (mock)",
+const MOCK_REGISTRY_RESOURCES = [
+  {
+    id: "mock-1",
+    creator: "GMOCKCREATOR1",
+    price: "1.5000000 USDC",
+    metadata: "Intro to Stellar",
+    listed: true,
+    tags: [] as string[],
+  },
+  {
+    id: "mock-2",
+    creator: "GMOCKCREATOR2",
+    price: "0.5000000 USDC",
+    metadata: "x402 Cheat Sheet",
+    listed: true,
+    tags: [] as string[],
+  },
+];
+
+/**
+ * Stand-in for on-chain registry list(). Paginates the same seeded rows as lookup.
+ */
+export function mockRegistryList(start: number, limit: number, contractId: string): string {
+  const slice = MOCK_REGISTRY_RESOURCES.slice(start, start + limit);
+  if (slice.length === 0) {
+    const message =
+      start === 0 && MOCK_REGISTRY_RESOURCES.length === 0
+        ? "No resources registered on-chain yet (mock mode)."
+        : `No on-chain resources in range [${start}, ${start + limit}) (mock mode). Try a lower start index.`;
+    return JSON.stringify(
+      {
+        source: "on-chain (mock)",
+        start,
+        limit,
+        count: 0,
+        message,
+        resources: [],
+        contract: contractId,
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(
+    {
+      source: "on-chain (mock)",
+      start,
+      limit,
+      count: slice.length,
+      resources: slice,
       contract: contractId,
     },
     null,

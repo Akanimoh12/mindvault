@@ -21,11 +21,16 @@ exports[`MCP tool metadata > exposes the expected tool surface 1`] = `
   "mindvault_check_bindings",
   "mindvault_check_consistency",
   "mindvault_registry_lookup",
+  "mindvault_registry_list",
   "mindvault_tx_status",
   "mindvault_reset",
   "mindvault_backup_state",
   "mindvault_restore_state",
   "mindvault_metrics",
+  "mindvault_update_metadata",
+  "mindvault_set_price",
+  "mindvault_transfer_ownership",
+  "mindvault_set_listed",
 ]
 `;
 

@@ -45,11 +45,19 @@ const VALID_CALLS: Record<string, Record<string, unknown>> = {
   mindvault_check_bindings: {},
   mindvault_check_consistency: { resourceId: "res-001" },
   mindvault_registry_lookup: { resourceId: "res-001" },
+  mindvault_registry_list: {},
   mindvault_tx_status: { txHash: VALID_SHA256 },
   mindvault_reset: {},
   mindvault_backup_state: { passphrase: "correct-horse" },
   mindvault_restore_state: { blob: "v1:abc", passphrase: "correct-horse" },
   mindvault_metrics: {},
+  mindvault_update_metadata: { resourceId: "res-001", metadata: "ipfs://Qm123" },
+  mindvault_set_price: { resourceId: "res-001", price: "10.00" },
+  mindvault_transfer_ownership: {
+    resourceId: "res-001",
+    newCreator: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+  },
+  mindvault_set_listed: { resourceId: "res-001", listed: true },
 };
 
 function expectInvalid(tool: string, args: unknown): ToolValidationError {

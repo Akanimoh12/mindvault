@@ -136,6 +136,10 @@ pub struct Resource {
     pub verified: VerificationStatus,
     /// Once true, `update_metadata` permanently rejects further changes.
     pub frozen: bool,
+    /// Ledger sequence number at which this resource was last written
+    /// (register or any mutation). Clients can use this to detect staleness
+    /// or order events without trusting off-chain timestamps.
+    pub updated_at: u32,
 }
 
 /// One page of the on-chain catalog plus a cursor for the next page.
@@ -256,6 +260,7 @@ impl VaultRegistry {
             tags,
             verified: VerificationStatus::Pending,
             frozen: false,
+            updated_at: env.ledger().sequence(),
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
@@ -295,7 +300,7 @@ impl VaultRegistry {
         let old_price = resource.price;
         let updater = resource.creator.clone();
         resource.price = new_price;
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         env.events().publish(
             (symbol_short!("setprice"),),
             PriceUpdated {
@@ -324,7 +329,7 @@ impl VaultRegistry {
         Self::validate_metadata_pointer(&metadata)?;
         let old_metadata = resource.metadata.clone();
         resource.metadata = metadata.clone();
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         env.events().publish(
             (symbol_short!("updmeta"), id.clone()),
             MetadataUpdateEvent {
@@ -347,7 +352,7 @@ impl VaultRegistry {
             return Err(Error::AlreadyFrozen);
         }
         resource.frozen = true;
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         env.events().publish((symbol_short!("freeze"), id), ());
         Ok(())
     }
@@ -384,7 +389,7 @@ impl VaultRegistry {
         }
 
         resource.verified = status;
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         env.events()
             .publish((symbol_short!("verify"), id), (old_status, status));
         Ok(())
@@ -401,7 +406,7 @@ impl VaultRegistry {
         // Capture previous tags before replacement for event emission
         let prev_tags = resource.tags.clone();
         resource.tags = tags.clone();
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
@@ -418,7 +423,7 @@ impl VaultRegistry {
         }
         let previous_owner = resource.creator.clone();
         resource.creator = new_creator.clone();
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         Self::move_creator_index(&env, &previous_owner, &new_creator, &id);
 
         let pending_key = DataKey::PendingTransfer(id.clone());
@@ -463,7 +468,7 @@ impl VaultRegistry {
         let mut resource = Self::load(&env, &id)?;
         let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         Self::move_creator_index(&env, &previous_owner, &pending_owner, &id);
 
         env.storage().persistent().remove(&key);
@@ -502,7 +507,7 @@ impl VaultRegistry {
         resource.creator.require_auth();
         let old_listed = resource.listed;
         resource.listed = listed;
-        Self::save(&env, &resource);
+        Self::save(&env, &mut resource);
         env.events()
             .publish((symbol_short!("setlisted"), id), (old_listed, listed));
         Ok(())
@@ -951,9 +956,10 @@ impl VaultRegistry {
             .ok_or(Error::NotFound)
     }
 
-    fn save(env: &Env, resource: &Resource) {
+    fn save(env: &Env, resource: &mut Resource) {
+        resource.updated_at = env.ledger().sequence();
         let key = DataKey::Resource(resource.id.clone());
-        env.storage().persistent().set(&key, resource);
+        env.storage().persistent().set(&key, resource as &Resource);
         Self::bump_persistent(env, &key);
     }
 

@@ -9,6 +9,7 @@
  * Full ListTools coverage through the SDK lives in `integration.test.ts`.
  */
 import { describe, it, expect } from "vitest";
+import { TOOL_DEFINITIONS } from "./tools.js";
 import { catalogFilterInputProperties } from "./catalogFilters.js";
 
 describe("MCP tool metadata", () => {
@@ -40,7 +41,18 @@ describe("MCP tool metadata", () => {
       "mindvault_backup_state",
       "mindvault_restore_state",
       "mindvault_metrics",
+      "mindvault_update_metadata",
+      "mindvault_set_price",
+      "mindvault_transfer_ownership",
+      "mindvault_set_listed",
     ];
+    for (const tool of TOOL_DEFINITIONS) {
+      expect(tool.name).toMatch(/^mindvault_/);
+      expect(typeof tool.description).toBe("string");
+      expect(tool.description.length).toBeGreaterThan(0);
+      expect(tool.inputSchema.type).toBe("object");
+    }
+  });
 
   it("exposes the expected tool surface", () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name)).toMatchSnapshot();

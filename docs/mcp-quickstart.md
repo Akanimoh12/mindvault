@@ -255,6 +255,54 @@ On-chain tx: 5f3a...c9
 
 ---
 
+### 14. `mindvault_update_metadata`
+
+Updates the on-chain metadata pointer for a registered resource in the vault-registry contract. Validates pointer format and length (max 512 chars, must start with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x) client-side before signing.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "metadata": "ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco" }
+```
+
+---
+
+### 15. `mindvault_set_price`
+
+Updates the on-chain price in USDC for a registered resource in the vault-registry contract.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "price": "10.00" }
+```
+
+---
+
+### 16. `mindvault_transfer_ownership`
+
+Transfers ownership of a registered resource on the vault-registry contract to a new creator address.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "newCreator": "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH" }
+```
+
+---
+
+### 17. `mindvault_set_listed`
+
+Manages catalog availability by listing or delisting a resource on-chain.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "listed": false }
+```
+
+---
+
 ## Acceptance walkthrough
 
 Following the steps above, a single operator running two MCP sessions should be able to:

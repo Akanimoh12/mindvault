@@ -2977,3 +2977,355 @@ fn repair_index_rerunning_current_list_is_a_safe_noop() {
     assert_eq!(page.get(0).unwrap().id, a);
     assert_eq!(page.get(1).unwrap().id, b);
 }
+
+// ---------------------------------------------------------------------------
+// Issue 1 — MAX_METADATA_POINTER_LEN boundary hardening
+// ---------------------------------------------------------------------------
+//
+// Acceptance criteria:
+//   • Exact max length succeeds.            (register_accepts_metadata_at_max_length above)
+//   • Max + 1 fails with MetadataTooLong.   (register_rejects_metadata_over_max_length above)
+//   • Random shorter format-valid strings succeed.  ← proptest below
+//   • update_metadata obeys the same boundary.      (update_metadata_accepts_at_max_length above)
+//   • Error handling is deterministic: only MetadataTooLong is returned for over-limit,
+//     never a panic or a different error code.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(60))]
+    /// Any format-valid metadata pointer up to MAX_METADATA_POINTER_LEN bytes
+    /// must be accepted by both `register` and `update_metadata`. The prefix
+    /// is fixed; the body length is drawn uniformly in [0, max − prefix_len].
+    #[test]
+    fn metadata_boundary_shorter_strings_always_succeed(
+        id_str   in r"[a-z][a-z0-9]{0,10}",
+        body_len in 0usize..=(512usize - "ipfs://".len()),
+        ch       in r"[a-zA-Z0-9]",
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+
+        let body: alloc::string::String = ch.repeat(body_len);
+        let raw = alloc::format!("ipfs://{}", body);
+        // Double-check our generator stays within the contract limit.
+        prop_assert!(raw.len() <= MAX_METADATA_POINTER_LEN as usize);
+
+        let id       = String::from_str(&env, &id_str);
+        let metadata = String::from_str(&env, &raw);
+
+        // register must succeed
+        let reg_result = client.try_register(
+            &creator, &id, &100i128, &metadata, &empty_tags(&env),
+        );
+        prop_assert!(reg_result.is_ok(), "register rejected valid metadata of len {}: {:?}", raw.len(), reg_result);
+
+        // update_metadata must also succeed
+        let new_body: alloc::string::String = ch.repeat(body_len);
+        let new_raw  = alloc::format!("https://{}", new_body);
+        prop_assert!(new_raw.len() <= MAX_METADATA_POINTER_LEN as usize);
+        let new_meta = String::from_str(&env, &new_raw);
+        let upd_result = client.try_update_metadata(&id, &new_meta);
+        prop_assert!(upd_result.is_ok(), "update_metadata rejected valid metadata of len {}: {:?}", new_raw.len(), upd_result);
+    }
+
+    /// Over-limit metadata (MAX + 1 … MAX + 50) must always return MetadataTooLong,
+    /// never any other error and never succeed.
+    #[test]
+    fn metadata_over_limit_always_returns_metadata_too_long(
+        id_str  in r"[a-z][a-z0-9]{0,10}",
+        excess  in 1usize..=50usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+
+        let prefix = "ipfs://";
+        let total_len = MAX_METADATA_POINTER_LEN as usize + excess;
+        let body: alloc::string::String = "a".repeat(total_len - prefix.len());
+        let raw = alloc::format!("{}{}", prefix, body);
+
+        let id       = String::from_str(&env, &id_str);
+        let metadata = String::from_str(&env, &raw);
+
+        let res = client.try_register(
+            &creator, &id, &100i128, &metadata, &empty_tags(&env),
+        );
+        prop_assert_eq!(
+            res,
+            Err(Ok(Error::MetadataTooLong)),
+            "expected MetadataTooLong for metadata len {}", raw.len()
+        );
+        // Resource must not have been created.
+        prop_assert!(!client.exists(&id));
+
+        // update_metadata on an existing resource with over-limit pointer also
+        // returns MetadataTooLong and leaves the original metadata untouched.
+        let valid_meta = String::from_str(&env, "ipfs://seed");
+        let id2 = String::from_str(&env, &alloc::format!("{}x", &id_str[..id_str.len().min(10)]));
+        // id2 may collide across runs; skip if already exists via the try_ variant
+        if client.try_register(&creator, &id2, &100i128, &valid_meta, &empty_tags(&env)).is_ok() {
+            let upd = client.try_update_metadata(&id2, &metadata);
+            prop_assert_eq!(
+                upd,
+                Err(Ok(Error::MetadataTooLong)),
+                "update_metadata should return MetadataTooLong for len {}", raw.len()
+            );
+            prop_assert_eq!(client.get(&id2).metadata, valid_meta);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue 2 — Duplicate detection stability across lifecycle flows
+// ---------------------------------------------------------------------------
+//
+// Acceptance criteria:
+//   • Duplicate register always fails with AlreadyRegistered.
+//   • count and Index state are unchanged after every failed duplicate attempt.
+//   • Stability holds after transfer, delist, relist, and propose/accept flows.
+
+/// After transferring ownership, the old id is still occupied — a duplicate
+/// register must fail regardless of whether the caller is the old or new owner.
+#[test]
+fn duplicate_register_fails_after_transfer_ownership() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let id = String::from_str(&env, "dupxfer");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+    client.transfer_ownership(&id, &bob);
+
+    // Both the old and the new owner must be rejected on a fresh register.
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(
+        client.try_register(&bob, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    // count and index must be unchanged.
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, id);
+    assert_eq!(client.get_owner(&id), bob);
+}
+
+/// After propose + accept transfer, the id is still locked against re-registration.
+#[test]
+fn duplicate_register_fails_after_propose_accept_transfer() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let id = String::from_str(&env, "dupaccept");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+    client.propose_transfer(&id, &bob);
+    client.accept_transfer(&id);
+
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(
+        client.try_register(&bob, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.get_owner(&id), bob);
+}
+
+/// Delisting a resource does not vacate its id — a duplicate register must fail
+/// on both a delisted and a relisted resource, with count/index intact throughout.
+#[test]
+fn duplicate_register_fails_across_delist_and_relist() {
+    let (env, alice, client) = setup();
+    let id = String::from_str(&env, "dupdelist");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+
+    // After delist: id still occupied.
+    client.delist(&id);
+    assert!(!client.get(&id).listed);
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+
+    // After relist: id still occupied.
+    client.set_listed(&id, &true);
+    assert!(client.get(&id).listed);
+    assert_eq!(
+        client.try_register(&alice, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+
+    // Index order is stable throughout.
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, id);
+}
+
+/// Multi-resource scenario: duplicate attempts against any of several resources
+/// (after mixed transfer / delist / relist ops) never corrupt count or index order.
+#[test]
+fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let meta = String::from_str(&env, "ipfs://m");
+
+    let r0 = String::from_str(&env, "mxr0");
+    let r1 = String::from_str(&env, "mxr1");
+    let r2 = String::from_str(&env, "mxr2");
+
+    client.register(&alice, &r0, &100i128, &meta, &empty_tags(&env));
+    client.register(&alice, &r1, &200i128, &meta, &empty_tags(&env));
+    client.register(&alice, &r2, &300i128, &meta, &empty_tags(&env));
+
+    // Mutate state.
+    client.transfer_ownership(&r0, &bob);
+    client.delist(&r1);
+    client.set_listed(&r1, &true); // relist
+
+    // Each duplicate attempt must return AlreadyRegistered.
+    for id in [&r0, &r1, &r2] {
+        assert_eq!(
+            client.try_register(&alice, id, &1i128, &meta, &empty_tags(&env)),
+            Err(Ok(Error::AlreadyRegistered)),
+            "expected AlreadyRegistered for id {:?}", id,
+        );
+        assert_eq!(
+            client.try_register(&bob, id, &1i128, &meta, &empty_tags(&env)),
+            Err(Ok(Error::AlreadyRegistered)),
+            "expected AlreadyRegistered for id {:?}", id,
+        );
+    }
+
+    // Count stays at 3; insertion order is preserved.
+    assert_eq!(client.count(), 3);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.get(0).unwrap().id, r0);
+    assert_eq!(page.get(1).unwrap().id, r1);
+    assert_eq!(page.get(2).unwrap().id, r2);
+// ── updated_at ledger metadata (#365) ───────────────────────────────────────
+
+/// `register` stamps updated_at with the ledger sequence at call time.
+#[test]
+fn register_stamps_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(42);
+    let id = String::from_str(&env, "ts1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    assert_eq!(client.get(&id).updated_at, 42);
+}
+
+/// `set_price` updates updated_at to the ledger sequence at call time.
+#[test]
+fn set_price_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(10);
+    let id = String::from_str(&env, "ts2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 10);
+
+    env.ledger().set_sequence_number(55);
+    client.set_price(&id, &200i128);
+    assert_eq!(client.get(&id).updated_at, 55);
+}
+
+/// `update_metadata` updates updated_at to the ledger sequence at call time.
+#[test]
+fn update_metadata_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(7);
+    let id = String::from_str(&env, "ts3");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://old"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 7);
+
+    env.ledger().set_sequence_number(99);
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(client.get(&id).updated_at, 99);
+}
+
+/// `transfer_ownership` updates updated_at to the ledger sequence at call time.
+#[test]
+fn transfer_ownership_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(3);
+    let id = String::from_str(&env, "ts4");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 3);
+
+    let new_owner = Address::generate(&env);
+    env.ledger().set_sequence_number(200);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.get(&id).updated_at, 200);
+}
+
+/// updated_at is independent per resource and not shared across resources.
+#[test]
+fn updated_at_is_per_resource() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(1);
+    let id_a = String::from_str(&env, "tsa");
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger().set_sequence_number(2);
+    let id_b = String::from_str(&env, "tsb");
+    client.register(
+        &creator,
+        &id_b,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Mutate only b at ledger 50.
+    env.ledger().set_sequence_number(50);
+    client.set_price(&id_b, &999i128);
+
+    // a should still reflect ledger 1; b should reflect ledger 50.
+    assert_eq!(client.get(&id_a).updated_at, 1);
+    assert_eq!(client.get(&id_b).updated_at, 50);
+}

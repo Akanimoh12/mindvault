@@ -322,6 +322,32 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "mindvault_registry_list",
+    description:
+      "List resources registered in the on-chain vault-registry contract with pagination (Soroban list). Returns compact summaries directly from Stellar, not the MindVault API catalog. Use start/limit to page through insertion order; limit is capped at 20 to match the contract. Empty pages return a clear message and next-step hint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "0-based index into the on-chain registry (default 0). Example: 0 for the first page, 20 for the second page when limit is 20.",
+          examples: [0, 20],
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description:
+            "Page size (1–20, default 20). The contract silently caps higher values at 20.",
+          examples: [20, 10],
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "mindvault_tx_status",
     description:
       "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
@@ -418,6 +444,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "mindvault_set_tags",
     description:
       "Replace the discovery tags on an on-chain resource. Only the resource creator (the agent wallet) may call this. Tags are normalized to lowercase before the on-chain call — pass them already lowercased to avoid round-trip surprises. Constraints: 1–8 tags, each 1–32 characters, containing only lowercase letters, digits, hyphens, or underscores. Pass an empty array to clear all tags. Requires a funded agent wallet.",
+    name: "mindvault_update_metadata",
+    description:
+      "Update the on-chain metadata pointer for a registered resource in the vault registry contract. Only the resource creator/owner may call this. Validates the pointer length and format (must start with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x and be at most 512 characters) client-side before signing and submitting.",
     inputSchema: {
       type: "object",
       properties: {
@@ -433,6 +462,101 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Replacement tag list (0–8 entries, each 1–32 chars). Tags are normalized to lowercase. Use lowercase letters, digits, hyphens, or underscores. Examples: ['dataset', 'research'], [] to clear all tags.",
           examples: [["dataset", "research"], ["finance", "api"], []],
+            "The resource ID to update metadata for. Example: 'cm7x8y9z'",
+          examples: ["cm7x8y9z", "res-001"],
+        },
+        metadata: {
+          type: "string",
+          description:
+            "The new metadata pointer string (max 512 characters). Must start with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x. Example: 'ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco'",
+          examples: [
+            "ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
+            "https://example.com/metadata.json",
+          ],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+        },
+      },
+      required: ["resourceId", "metadata"],
+    },
+  },
+  {
+    name: "mindvault_set_price",
+    description:
+      "Update the on-chain price in USDC for a registered resource in the vault registry contract. Only the resource creator/owner may call this. Prepares, signs, and submits the set_price mutation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        resourceId: {
+          type: "string",
+          description:
+            "The resource ID to update price for. Example: 'cm7x8y9z'",
+          examples: ["cm7x8y9z", "res-001"],
+        },
+        price: {
+          type: "string",
+          description:
+            "New price in USDC as a decimal string. Example: '10.00' charges 10 USDC per access.",
+          examples: ["10.00", "5.50", "0.99"],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+        },
+      },
+      required: ["resourceId", "price"],
+    },
+  },
+  {
+    name: "mindvault_transfer_ownership",
+    description:
+      "Transfer ownership of a registered resource on the vault registry contract to a new creator wallet address (G… key). Only the current resource owner may call this.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        resourceId: {
+          type: "string",
+          description:
+            "The resource ID to transfer ownership of. Example: 'cm7x8y9z'",
+          examples: ["cm7x8y9z", "res-001"],
+        },
+        newCreator: {
+          type: "string",
+          description:
+            "The Stellar public key (G… , 56 chars) of the new resource owner.",
+          examples: ["GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH"],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+        },
+      },
+      required: ["resourceId", "newCreator"],
+    },
+  },
+  {
+    name: "mindvault_set_listed",
+    description:
+      "Manage catalog availability by changing the listed state (listed or delisted) of a resource on the vault registry contract. Only the resource creator/owner may call this.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        resourceId: {
+          type: "string",
+          description:
+            "The resource ID to change listed state for. Example: 'cm7x8y9z'",
+          examples: ["cm7x8y9z", "res-001"],
+        },
+        listed: {
+          type: "boolean",
+          description:
+            "Set to true to list/relist the resource in the catalog, or false to delist it.",
+          examples: [true, false],
         },
         confirmMainnet: {
           type: "boolean",
@@ -441,6 +565,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ["resourceId", "tags"],
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+        },
+      },
+      required: ["resourceId", "listed"],
     },
   },
 ];
