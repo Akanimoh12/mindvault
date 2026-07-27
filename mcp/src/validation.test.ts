@@ -58,6 +58,10 @@ const VALID_CALLS: Record<string, Record<string, unknown>> = {
     newCreator: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
   },
   mindvault_set_listed: { resourceId: "res-001", listed: true },
+  mindvault_check_state_permissions: {},
+  mindvault_registry_health: {},
+  mindvault_import_wallet: {},
+  mindvault_rotate_publisher_key: {},
 };
 
 function expectInvalid(tool: string, args: unknown): ToolValidationError {

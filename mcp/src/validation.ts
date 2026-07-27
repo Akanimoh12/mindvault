@@ -239,6 +239,23 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     listed: { kind: "flag", required: true },
     confirmMainnet: CONFIRM_MAINNET,
   },
+  mindvault_check_state_permissions: {},
+  mindvault_registry_health: {},
+  mindvault_import_wallet: {
+    secretKey: {
+      kind: "string",
+      maxLength: 56,
+      pattern: /^S[A-Z2-7]{55}$/,
+      patternHint: "a Stellar secret key (S… , 56 chars)",
+    },
+    profile: PROFILE_NAME,
+    persist: { kind: "flag" },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_rotate_publisher_key: {
+    profile: PROFILE_NAME,
+    confirmMainnet: CONFIRM_MAINNET,
+  },
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────

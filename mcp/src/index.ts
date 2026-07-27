@@ -80,7 +80,7 @@ import {
 } from "./publishStatus.js";
 import { safeErrorMessage } from "./redaction.js";
 import { signMutatingHeaders } from "./requestSignature.js";
-import { exportState, restoreState } from "./stateBackup.js";
+import { exportState, restoreState, checkStatePermissions } from "./stateBackup.js";
 import { safeErrorMessage, safeLog } from "./redaction.js";
 import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
 import {
@@ -346,6 +346,218 @@ export function resetState(all: boolean, confirm: unknown = false): string {
     `Profile "${name}" cleared (wallet and publisher API key removed).`,
     `Remaining profiles: ${Object.keys(profiles).length}.`,
     `State file: ${STATE_FILE}`,
+  ].join("\n");
+}
+
+// ── #404: State file permission checks ───────────────────────────────────────
+
+function checkStatePermissionsTool(): string {
+  const result = checkStatePermissions();
+  const lines = [
+    `State file: ${STATE_FILE}`,
+    `Exists: ${result.exists}`,
+    result.mode ? `Current mode: ${result.mode}` : null,
+    `Expected mode: ${result.expectedMode}`,
+    `Safe: ${result.isSafe ? "yes" : "no"}`,
+    "",
+    result.message,
+  ].filter((l): l is string => l !== null);
+  return lines.join("\n");
+}
+
+// ── #401: Registry health check ──────────────────────────────────────────────
+
+interface DependencyStatus {
+  name: string;
+  ok: boolean;
+  message: string;
+}
+
+async function checkDependency(
+  name: string,
+  url: string,
+  init?: RequestInit,
+): Promise<DependencyStatus> {
+  try {
+    const res = await withRetry(
+      () => fetchWithTimeout(httpFetch, url, init, "http", TIMEOUTS.http),
+      httpRetryOptions(`health:${name}`),
+    );
+    if (res.ok) {
+      return { name, ok: true, message: `Reachable (HTTP ${res.status})` };
+    }
+    return { name, ok: false, message: `Returned HTTP ${res.status}` };
+  } catch (err) {
+    return { name, ok: false, message: `Unreachable: ${safeErrorMessage(err)}` };
+  }
+}
+
+async function registryHealth(): Promise<string> {
+  const deps: DependencyStatus[] = [];
+
+  // 1. MindVault API
+  deps.push(await checkDependency("MindVault API", `${BASE_URL}/resources`));
+
+  // 2. Horizon
+  deps.push(await checkDependency("Horizon", `${HORIZON_URL}`));
+
+  // 3. Soroban RPC — use a lightweight health endpoint or POST
+  deps.push(
+    await checkDependency("Soroban RPC", SOROBAN_RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getNetwork", params: {} }),
+    }),
+  );
+
+  // 4. Registry contract — verify contract ID is set and non-empty
+  if (REGISTRY_CONTRACT_ID) {
+    deps.push({
+      name: "Registry contract",
+      ok: true,
+      message: `Contract ID: ${REGISTRY_CONTRACT_ID}`,
+    });
+  } else {
+    deps.push({
+      name: "Registry contract",
+      ok: false,
+      message: "VAULT_REGISTRY_CONTRACT_ID is not set.",
+    });
+  }
+
+  // 5. x402 network alignment
+  const expectedNetwork = networkPreset.x402Network;
+  const currentNetwork = NETWORK;
+  if (currentNetwork === expectedNetwork) {
+    deps.push({
+      name: "x402 network",
+      ok: true,
+      message: `Aligned: ${currentNetwork}`,
+    });
+  } else {
+    deps.push({
+      name: "x402 network",
+      ok: false,
+      message: `Mismatch: expected ${expectedNetwork}, got ${currentNetwork}.`,
+    });
+  }
+
+  const allOk = deps.every((d) => d.ok);
+  const lines = deps.map((d) => {
+    const icon = d.ok ? "✓" : "✗";
+    return `${icon} ${d.name}: ${d.message}`;
+  });
+  lines.unshift(allOk ? "All dependencies healthy." : "Some dependencies are unhealthy.", "");
+  return lines.join("\n");
+}
+
+// ── #402: Wallet import flow ─────────────────────────────────────────────────
+
+/**
+ * Derive a Stellar public key from a secret key without importing the full SDK.
+ * Ed25519 public key = nacl.publicKey.fromSecret(secretKey).
+ * We use the Stellar SDK's StrKey for this.
+ */
+async function importWallet(args: {
+  secretKey?: string;
+  profile?: string;
+  persist?: boolean;
+}): Promise<string> {
+  const target = resolveProfileName(args.profile);
+  const persist = args.persist !== false;
+
+  // Resolve the secret key: explicit arg > env var
+  let secretKey = args.secretKey;
+  if (!secretKey) {
+    secretKey = process.env.MINDVAULT_AGENT_SECRET;
+  }
+  if (!secretKey) {
+    throw new Error(
+      "No secret key provided. Pass secretKey or set MINDVAULT_AGENT_SECRET in the environment.",
+    );
+  }
+
+  // Validate: must be a Stellar secret key (S + 55 base32 chars)
+  if (!/^S[A-Z2-7]{55}$/.test(secretKey)) {
+    throw new Error("Invalid Stellar secret key. Must be S followed by 55 base32 characters.");
+  }
+
+  // Derive the public key using the Stellar SDK
+  let publicKey: string;
+  try {
+    const { Keypair } = await import("@stellar/stellar-sdk");
+    const keypair = Keypair.fromSecret(secretKey);
+    publicKey = keypair.publicKey();
+  } catch (err) {
+    throw new Error(`Failed to derive public key: ${safeErrorMessage(err)}`);
+  }
+
+  if (persist) {
+    activeProfileName = target;
+    activeProfile().wallet = { publicKey, secretKey };
+    saveState();
+    return [
+      `Wallet imported.`,
+      `Profile: ${target}`,
+      `Address: ${publicKey}`,
+      `Wallet persisted to ${STATE_FILE} (mode 0600).`,
+    ].join("\n");
+  }
+
+  return [
+    `Wallet validated (not persisted).`,
+    `Address: ${publicKey}`,
+    `Pass persist: true to save to the state file.`,
+  ].join("\n");
+}
+
+// ── #405: Rotate publisher API key ───────────────────────────────────────────
+
+async function rotatePublisherKey(profileArg?: string): Promise<string> {
+  const target = resolveProfileName(profileArg);
+  const wallet = requireWallet();
+  const oldApiKey = profiles[target]?.apiKey;
+  if (!oldApiKey) {
+    throw new Error(
+      `No publisher API key in profile "${target}". Run mindvault_register first.`,
+    );
+  }
+
+  const res = await jsonFetch(`${BASE_URL}/publishers/rotate-key`, {
+    method: "POST",
+    headers: { "x-api-key": oldApiKey },
+  });
+
+  if (!res.ok) {
+    throwHttpError({
+      operation: "Failed to rotate publisher API key",
+      source: "api",
+      status: res.status,
+      data: res.data,
+    });
+  }
+
+  const newApiKey = res.data.apiKey;
+  if (typeof newApiKey !== "string" || newApiKey.length === 0) {
+    throw new Error("Server returned an empty API key. Contact support.");
+  }
+
+  // Store under the target profile and persist
+  if (!profiles[target]) profiles[target] = {};
+  profiles[target].apiKey = newApiKey;
+  if (target === activeProfileName) {
+    // already active
+  } else {
+    activeProfileName = target;
+  }
+  saveState();
+
+  return [
+    `Publisher API key rotated.`,
+    `Profile: ${target}`,
+    `Publisher ID: ${res.data.id ?? "(unknown)"}`,
+    `New key persisted to ${STATE_FILE} (not shown).`,
+    `The old key has been invalidated server-side.`,
   ].join("\n");
 }
 
@@ -2276,6 +2488,18 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
     case "mindvault_metrics":
       return toolMetrics(flag(args, "reset"));
+    case "mindvault_check_state_permissions":
+      return checkStatePermissionsTool();
+    case "mindvault_registry_health":
+      return registryHealth();
+    case "mindvault_import_wallet":
+      return importWallet({
+        secretKey: optionalString(args, "secretKey"),
+        profile: optionalString(args, "profile"),
+        persist: flag(args, "persist"),
+      });
+    case "mindvault_rotate_publisher_key":
+      return rotatePublisherKey(optionalString(args, "profile"));
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2691,6 +2915,74 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: "mindvault_check_state_permissions",
+      description:
+        "Verify the state file (~/.mindvault/state.json) has safe permissions (mode 0600). Warns when the file is world-readable or group-readable, which would expose wallet secret keys and API keys to other system users. Safe by default; run after any manual file operations or environment migration.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
+      name: "mindvault_registry_health",
+      description:
+        "Check the health of every dependency the MCP server relies on: MindVault API, Horizon, Soroban RPC, vault-registry contract, and x402 network alignment. Returns per-dependency status (ok/error) with actionable failure messages. Does not leak secrets or environment variables.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
+      name: "mindvault_import_wallet",
+      description:
+        "Import an existing Stellar wallet by providing a secret key (or reading MINDVAULT_AGENT_SECRET from the environment). Validates the key, optionally persists it to the active profile (or a named profile), and never logs the secret. Use this to restore a wallet from backup or connect to an existing identity.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          secretKey: {
+            type: "string",
+            description:
+              "Stellar secret key (S… , 56 chars) to import. If omitted, reads from MINDVAULT_AGENT_SECRET env var.",
+            examples: ["SCHZPJ..."],
+          },
+          profile: {
+            type: "string",
+            description:
+              "Optional profile name to import into. Defaults to the active profile.",
+            examples: ["testnet", "mainnet-publisher"],
+          },
+          persist: {
+            type: "boolean",
+            description:
+              "When true (default), save the imported wallet to the state file. When false, validate only and return the public key without writing to disk.",
+            examples: [true, false],
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "mindvault_rotate_publisher_key",
+      description:
+        "Rotate the publisher API key for the active profile. Calls the MindVault server rotation endpoint (POST /publishers/rotate-key), stores the new key in the state file, and returns the updated publisher ID. The old key is invalidated server-side. Requires an existing registration (mindvault_register).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          profile: {
+            type: "string",
+            description:
+              "Optional profile name to rotate the key for. Defaults to the active profile.",
+            examples: ["testnet", "mainnet-publisher"],
+          },
+          confirmMainnet: {
+            type: "boolean",
+            description:
+              "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
+          },
+        },
+        required: [],
+      },
+    },
   ],
 }));
 
@@ -2788,6 +3080,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         requiredString(args, "resourceId"),
         flag(args, "listed")!,
       );
+    case "mindvault_check_state_permissions":
+      return checkStatePermissionsTool();
+    case "mindvault_registry_health":
+      return registryHealth();
+    case "mindvault_import_wallet":
+      return importWallet({
+        secretKey: optionalString(args, "secretKey"),
+        profile: optionalString(args, "profile"),
+        persist: flag(args, "persist"),
+      });
+    case "mindvault_rotate_publisher_key":
+      return rotatePublisherKey(optionalString(args, "profile"));
     default:
       // Unreachable: validateToolArgs rejects unknown tools first. Kept so a
       // tool added to the spec table without a handler fails loudly.
