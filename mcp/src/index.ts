@@ -1463,9 +1463,22 @@ function registryInfo(): string {
 /**
  * Compare a resource from the API catalog with the same resource in the vault-registry contract.
  * Reports matching fields, mismatches, missing API records, and missing on-chain records.
+ *
+ * When `expectedMetadataHash` is supplied, the digest the caller computed over
+ * the off-chain content is compared against the `contentHash` anchored in the
+ * on-chain metadata pointer. Both sides are canonicalized first (see
+ * metadataHash.ts), so `sha256:AB…` and `ab…` compare equal.
  */
-async function checkConsistency(resourceId: string): Promise<string> {
+export async function checkConsistency(
+  resourceId: string,
+  expectedMetadataHash?: string,
+): Promise<string> {
   if (!resourceId) throw new Error("resourceId is required.");
+  // Reject a malformed expectation up front: comparing against a digest that
+  // is not in the fixed format can only produce a misleading "mismatch".
+  const expected = expectedMetadataHash
+    ? parseMetadataHash(expectedMetadataHash, "expectedMetadataHash").canonical
+    : null;
 
   // Fetch from API
   const apiRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
@@ -1664,7 +1677,7 @@ async function checkBindings(): Promise<string> {
 }
 
 /**
- * Return the current metrics snapshot as JSON. Only counts, durations, and tool
+ * Return opt-in tool-level metrics as JSON. Only counts, durations, and tool
  * names are included — never arguments, wallets, or API keys. When metrics are
  * disabled, returns an actionable note instead of counters. Pass reset=true to
  * clear counters after reading.
@@ -2073,15 +2086,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-async function dispatchTool(name: string, args: any): Promise<string> {
-  assertMainnetMutationAllowed(STELLAR_NETWORK, name, args ?? {});
   switch (name) {
     case "mindvault_setup_wallet":
-      return setupWallet(args.profile as string | undefined);
+      return setupWallet(optionalString(args, "profile"));
     case "mindvault_wallet_info":
       return walletInfo();
     case "mindvault_use_profile":
-      return useProfile(args.name as string);
+      return useProfile(requiredString(args, "name"));
     case "mindvault_list_profiles":
       return listProfiles();
     case "mindvault_browse": {
@@ -2093,19 +2104,19 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return parsed.ok ? search(parsed.filters) : parsed.error;
     }
     case "mindvault_preview":
-      return preview(args.resourceId as string);
+      return preview(requiredString(args, "resourceId"));
     case "mindvault_register":
       return register(
-        args.name as string,
-        args.email as string,
-        args.walletAddress as string | undefined,
+        requiredString(args, "name"),
+        requiredString(args, "email"),
+        optionalString(args, "walletAddress"),
       );
     case "mindvault_publish":
       return publish({
-        title: args.title as string,
-        description: args.description as string | undefined,
-        price: args.price as string,
-        externalUrl: args.externalUrl as string,
+        title: requiredString(args, "title"),
+        description: optionalString(args, "description"),
+        price: requiredString(args, "price"),
+        externalUrl: requiredString(args, "externalUrl"),
       });
     case "mindvault_publish_status":
       return publishStatus({
@@ -2119,7 +2130,7 @@ async function dispatchTool(name: string, args: any): Promise<string> {
     case "mindvault_purchase_history":
       return purchaseHistoryTool(args as Record<string, unknown>);
     case "mindvault_register_onchain":
-      return registerOnchain(args.resourceId as string);
+      return registerOnchain(requiredString(args, "resourceId"));
     case "mindvault_agent_status":
       return agentStatus();
     case "mindvault_registry_info":
@@ -2129,20 +2140,25 @@ async function dispatchTool(name: string, args: any): Promise<string> {
     case "mindvault_check_bindings":
       return checkBindings();
     case "mindvault_check_consistency":
-      return checkConsistency(args.resourceId as string);
+      return checkConsistency(
+        requiredString(args, "resourceId"),
+        optionalString(args, "expectedMetadataHash"),
+      );
     case "mindvault_registry_lookup":
-      return registryLookup(args.resourceId as string);
+      return registryLookup(requiredString(args, "resourceId"));
     case "mindvault_tx_status":
-      return txStatus(args.txHash as string);
+      return txStatus(requiredString(args, "txHash"));
     case "mindvault_reset":
       return resetState(args.all === true, args.confirm);
     case "mindvault_backup_state":
-      return backupState(args.passphrase as string);
+      return backupState(requiredString(args, "passphrase"));
     case "mindvault_restore_state":
-      return restoreStateTool(args.blob as string, args.passphrase as string);
+      return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
     case "mindvault_metrics":
-      return toolMetrics(args.reset === true);
+      return toolMetrics(flag(args, "reset"));
     default:
+      // Unreachable: validateToolArgs rejects unknown tools first. Kept so a
+      // tool added to the spec table without a handler fails loudly.
       throw new Error(`Unknown tool: ${name}`);
   }
 }

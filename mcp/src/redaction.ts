@@ -82,6 +82,10 @@ export function redactObject<T>(obj: T): T {
 
 /**
  * Check if a field name is likely to contain a secret.
+ *
+ * Matching is substring-based on the lowercased field name, so the markers
+ * below also cover camelCase and snake_case spellings (`secret` covers
+ * `secretKey`/`secret_key`, `apikey` covers `apiKey`/`api_key`/`x-api-key`).
  */
 function isSecretFieldName(fieldName: string): boolean {
   const secretFields = [

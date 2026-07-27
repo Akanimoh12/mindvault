@@ -67,6 +67,14 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("setadmin", "new_admin: Address"),
     ("nomadmin", "new_admin: Address"),
     ("accadmin", "new_admin: Address"),
+    ("freeze", "()"),
+    (
+        "verify",
+        "(old_status: VerificationStatus, new_status: VerificationStatus)",
+    ),
+    ("addverif", "true"),
+    ("rmverif", "false"),
+    ("reindex", "new_count: u32 (topic carries old_count: u32)"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].

@@ -48,7 +48,11 @@ jobs:
         working-directory: contract
         run: |
           WASM_FILE="target/wasm32v1-none/release/vault_registry.wasm"
-          MAX_SIZE=28672
+          # 36 KB. Raised from 28 KB: the 28 KB figure was set against a
+          # snapshot that did not yet include registry_info, the verifier role,
+          # the on-chain verification mirror, metadata freeze, and index repair
+          # — those merged together and the optimized build is now ~33 KB.
+          MAX_SIZE=36864
           SIZE=$(stat -c%s "$WASM_FILE")
           echo "WASM Size: $SIZE bytes"
           if [ "$SIZE" -gt "$MAX_SIZE" ]; then

@@ -198,40 +198,6 @@ The `settags` event emits both previous and next tags, enabling indexers
 to detect tag removals and reconcile state changes without requiring full history
 scans.
 
-### Price units
-
-`price` is an `i128` in **USDC stroops** (7 decimal places).
-Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
-
-### Resource type
-
-```rust
-pub struct Resource {
-    pub id: String,        // unique resource ID (1-24 bytes), matches server resource ID
-    pub creator: Address,  // current owner's Stellar address
-    pub price: i128,       // price in USDC stroops (7 decimals)
-    pub metadata: String,  // pointer (supported URI or content-hash form), max 512 bytes
-    pub listed: bool,      // whether the resource is available for discovery/purchase
-    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
-}
-```
-
-Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`,
-and content-hash prefixes such as `sha256:`, `sha-256:`, or `0x`.
-
-### Catalog page (cursor primitive)
-
-```rust
-pub struct CatalogPage {
-    pub items: Vec<Resource>,     // this page of resources (insertion order)
-    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
-}
-```
-
-Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
-recomputing offsets from `items.len()`. `list(start, limit)` remains available and
-returns only the `items` body for existing callers.
-
 ### Registry info (discovery)
 
 ```rust
@@ -257,30 +223,31 @@ separate config lookup. It always succeeds; there is no error case.
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
-### WASM Size Budget
+`price` is an `i128` in **USDC stroops** (7 decimal places).
+Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
 
-To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI.
+### Constants
 
-Currently, the limit is **10,240 bytes (10 KB)**.
-| `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer, in bytes. |
-| `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash, in bytes. |
-| `MAX_PRICE` | `10^18` | Maximum price, in USDC stroops. |
+| Constant                   | Value                        | Description                                           |
+| -------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer, in bytes.     |
+| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash, in bytes.   |
+| `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                       |
+| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
+| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
 ### WASM size budget
 
-### Breaking change: tags on `register` (v2)
-
-`register` now requires a fifth argument `tags: Vec<String>`. Existing callers must pass
-`[]` (empty tags) until they adopt labels. The `Resource` struct gains a `tags` field;
-`set_tags` updates tags without touching `metadata`.
 This contract enforces a strictly tracked optimized WASM size budget in CI
-(`stellar contract build --optimize`). Currently the limit is **28,672 bytes
-(28 KB)** — raised from a stale 10 KB figure that had already been exceeded
-by the accumulated tags/pagination/admin/terms-hash surface before this round
-of changes (~5 KB of headroom above the current optimized size of ~23 KB). If
-genuine feature additions push past it, raise `MAX_SIZE` in
-`.github/workflows/contract-ci.yml` and explain the growth in your PR
-description.
+(`stellar contract build --optimize`). Currently the limit is **36,864 bytes
+(36 KB)**, against a current optimized size of ~33 KB.
+
+The budget has been raised twice as the surface grew: from a stale 10 KB
+figure to 28 KB (tags, pagination, admin, terms hashes), and from 28 KB to
+36 KB once `registry_info`, the verifier role, the on-chain verification
+mirror, metadata freeze, and index repair merged. If genuine feature additions
+push past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and
+explain the growth in your PR description.
 
 ### Emergency pause
 

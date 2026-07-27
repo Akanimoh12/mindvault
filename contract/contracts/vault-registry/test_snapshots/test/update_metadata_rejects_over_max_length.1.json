@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "meta-upd-bad"
+                  "string": "metaupdbad"
                 },
                 {
                   "i128": {
@@ -90,7 +90,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "meta-upd-bad"
+                      "string": "metaupdbad"
                     }
                   ]
                 }
@@ -137,7 +137,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "meta-upd-bad"
+                  "string": "metaupdbad"
                 }
               }
             },
@@ -156,7 +156,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "meta-upd-bad"
+                  "string": "metaupdbad"
                 }
               ]
             },
@@ -176,7 +176,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "meta-upd-bad"
+                      "string": "metaupdbad"
                     }
                   ]
                 },
@@ -193,10 +193,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "frozen"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "meta-upd-bad"
+                        "string": "metaupdbad"
                       }
                     },
                     {
@@ -232,6 +240,18 @@
                       },
                       "val": {
                         "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "verified"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Pending"
+                          }
+                        ]
                       }
                     }
                   ]

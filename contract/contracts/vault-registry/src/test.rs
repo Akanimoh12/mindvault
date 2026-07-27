@@ -2429,6 +2429,21 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.accept_admin(&admin2);
     record(&env, &client, &mut observed);
 
+    // Verifier role, verification mirror, freeze, and index repair.
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier); // -> "addverif"
+    record(&env, &client, &mut observed);
+    client.set_verification_status(&r2, &verifier, &VerificationStatus::Verified); // -> "verify"
+    record(&env, &client, &mut observed);
+    client.remove_verifier(&verifier); // -> "rmverif"
+    record(&env, &client, &mut observed);
+
+    client.freeze_metadata(&r2); // -> "freeze"
+    record(&env, &client, &mut observed);
+
+    client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
+    record(&env, &client, &mut observed);
+
     observed.sort();
     observed.dedup();
 

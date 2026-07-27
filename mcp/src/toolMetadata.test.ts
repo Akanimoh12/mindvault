@@ -1,5 +1,5 @@
 /**
- * Snapshot tests for MCP tool metadata (ListTools response).
+ * Snapshot tests for MCP tool metadata (the ListTools response).
  *
  * Verifies that the tool list exposed to agent clients stays deterministic and
  * complete. Snapshots capture the shape of the most commonly used tools
@@ -42,7 +42,8 @@ describe("MCP tool metadata", () => {
       "mindvault_metrics",
     ];
 
-    expect(expectedToolNames).toMatchSnapshot();
+  it("exposes the expected tool surface", () => {
+    expect(TOOL_DEFINITIONS.map((t) => t.name)).toMatchSnapshot();
   });
 
   it("mindvault_search inputSchema", () => {
