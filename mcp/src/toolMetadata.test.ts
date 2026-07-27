@@ -9,6 +9,7 @@
  * Full ListTools coverage through the SDK lives in `integration.test.ts`.
  */
 import { describe, it, expect } from "vitest";
+import { catalogFilterInputProperties } from "./catalogFilters.js";
 
 describe("MCP tool metadata", () => {
   it("all tools have required fields", () => {
@@ -24,7 +25,9 @@ describe("MCP tool metadata", () => {
       "mindvault_preview",
       "mindvault_register",
       "mindvault_publish",
+      "mindvault_publish_status",
       "mindvault_buy",
+      "mindvault_purchase_history",
       "mindvault_register_onchain",
       "mindvault_agent_status",
       "mindvault_registry_info",
@@ -43,44 +46,10 @@ describe("MCP tool metadata", () => {
   });
 
   it("mindvault_search inputSchema", () => {
-    // Snapshot the mindvault_search schema to catch regressions in examples/descriptions.
     const searchSchema = {
       type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description:
-            "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
-          examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
-        },
-        minPrice: {
-          type: "string",
-          description:
-            "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
-          examples: ["5.00", "10.50", "0.50"],
-        },
-        maxPrice: {
-          type: "string",
-          description:
-            "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
-          examples: ["20.00", "15.99", "100.00"],
-        },
-        verificationStatus: {
-          type: "string",
-          enum: ["pending", "verified", "rejected", "skipped"],
-          description:
-            "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
-          examples: ["verified"],
-        },
-        resourceType: {
-          type: "string",
-          enum: ["file", "link"],
-          description:
-            "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
-          examples: ["link", "file"],
-        },
-      },
-      required: ["query"],
+      properties: { ...catalogFilterInputProperties },
+      required: [],
     };
 
     expect(searchSchema).toMatchSnapshot();

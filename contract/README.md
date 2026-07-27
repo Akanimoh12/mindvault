@@ -154,36 +154,9 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event      | Payload                           | Triggered by                                                                                                           |
-| ---------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `register` | `Resource` (full resource record) | `register()` succeeds                                                                                                  |
-| `5`        | `InvalidTag`                      | Tag count exceeds 8, or a tag is empty / exceeds 32 bytes.                                                             |
-| `6`        | `Unauthorized`                    | Reserved for general caller-authorization failures.                                                                    |
-| `7`        | `PendingAdminNotSet`              | No pending admin nomination exists, or the caller doesn't match it.                                                    |
-| `8`        | `PendingAdminAlreadySet`          | A pending admin nomination is already active.                                                                          |
-| `9`        | `SameAdmin`                       | Nominated admin is already the current admin.                                                                          |
-| `10`       | `TermsHashTooLong`                | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                                                                    |
-| `11`       | `InvalidResourceId`               | Resource ID is empty, exceeds 24 bytes, or contains characters other than lowercase letters/digits.                    |
-| `12`       | `InvalidMetadataPointer`          | Metadata does not start with a supported prefix.                                                                       |
-| `13`       | `EmptyMetadata`                   | Metadata pointer is empty.                                                                                             |
-| `14`       | `AlreadyOwner`                    | `transfer_ownership`/`propose_transfer` target already owns the resource.                                              |
-| `15`       | `NoPendingTransfer`               | `accept_transfer`/`cancel_transfer` called with no pending proposal.                                                   |
-| `16`       | `ReservedId`                      | Resource ID matches a reserved word (`admin`, `null`, `registry`, `api`, `index`, `root`, `system`), case-insensitive. |
-| `17`       | `PriceExceedsMax`                 | Price exceeds `MAX_PRICE` (10^18 stroops).                                                                             |
-| `18`       | `AdminNotSet`                     | `add_verifier`/`remove_verifier`/`repair_index` called before any admin has been set via `nominate_new_admin`.         |
-| `19`       | `NotVerifier`                     | Caller does not currently hold the verifier role.                                                                      |
-| `20`       | `InvalidVerificationTransition`   | Requested verification status transition isn't one of the four allowed transitions.                                    |
-| `21`       | `AlreadyFrozen`                   | `freeze_metadata` called on a resource that is already frozen.                                                         |
-| `22`       | `MetadataFrozen`                  | `update_metadata` called on a resource that has been frozen.                                                           |
-| `23`       | `DuplicateInRepair`               | `repair_index`'s id list contains the same id more than once.                                                          |
-
-### Events
-
-All events use the topic `(symbol, id)` (or `(symbol,)` for admin/no-id actions).
-
 | Event       | Payload                                                  | Triggered by                                               |
 | ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
-| `register`  | `Resource` (full struct)                                 | `register()` succeeds                                      |
+| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
 | `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
 | `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
 | `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |

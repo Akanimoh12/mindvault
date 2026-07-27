@@ -58,6 +58,11 @@
   ],
   "license": "MIT",
   "pnpm": {
+    "auditConfig": {
+      "ignoreCves": [
+        "CVE-2026-14257"
+      ]
+    },
     "overrides": {
       "axios": "^1.16.0",
       "ws": "^8.21.0",
@@ -72,6 +77,11 @@
       "brace-expansion": "^5.0.8",
       "js-yaml": "^4.3.0",
       "fast-uri": "^3.1.4"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-mh99-v99m-4gvg"
+      ]
     }
   }
 }

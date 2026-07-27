@@ -11,7 +11,9 @@ exports[`MCP tool metadata > all tools have required fields 1`] = `
   "mindvault_preview",
   "mindvault_register",
   "mindvault_publish",
+  "mindvault_publish_status",
   "mindvault_buy",
+  "mindvault_purchase_history",
   "mindvault_register_onchain",
   "mindvault_agent_status",
   "mindvault_registry_info",
@@ -79,6 +81,24 @@ exports[`MCP tool metadata > mindvault_publish inputSchema 1`] = `
 exports[`MCP tool metadata > mindvault_search inputSchema 1`] = `
 {
   "properties": {
+    "limit": {
+      "description": "Max number of resources to return (1–100, server default 20).",
+      "examples": [
+        20,
+        50,
+      ],
+      "maximum": 100,
+      "minimum": 1,
+      "type": "integer",
+    },
+    "listed": {
+      "description": "Filter by listing state. The public catalog is listed=true only; listed=false yields no public catalog matches (use mindvault_registry_lookup for a specific resource).",
+      "examples": [
+        true,
+        false,
+      ],
+      "type": "boolean",
+    },
     "maxPrice": {
       "description": "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
       "examples": [
@@ -94,6 +114,23 @@ exports[`MCP tool metadata > mindvault_search inputSchema 1`] = `
         "5.00",
         "10.50",
         "0.50",
+      ],
+      "type": "string",
+    },
+    "offset": {
+      "description": "Number of resources to skip for pagination.",
+      "examples": [
+        0,
+        20,
+      ],
+      "minimum": 0,
+      "type": "integer",
+    },
+    "owner": {
+      "description": "Filter by publisher name or wallet address (case-insensitive substring). Example: 'Alice' or a G... Stellar address.",
+      "examples": [
+        "Alice",
+        "GB6LGS25...",
       ],
       "type": "string",
     },
@@ -118,6 +155,30 @@ exports[`MCP tool metadata > mindvault_search inputSchema 1`] = `
       ],
       "type": "string",
     },
+    "sort": {
+      "description": "Sort order for results. Defaults to newest when omitted.",
+      "enum": [
+        "newest",
+        "price_asc",
+        "price_desc",
+        "title",
+      ],
+      "examples": [
+        "newest",
+        "price_asc",
+        "price_desc",
+        "title",
+      ],
+      "type": "string",
+    },
+    "tags": {
+      "description": "Comma-separated discovery tags; resources must include all listed tags (matched client-side against tag fields on results). Example: 'dataset,research'.",
+      "examples": [
+        "dataset",
+        "dataset,research",
+      ],
+      "type": "string",
+    },
     "verificationStatus": {
       "description": "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
       "enum": [
@@ -132,9 +193,7 @@ exports[`MCP tool metadata > mindvault_search inputSchema 1`] = `
       "type": "string",
     },
   },
-  "required": [
-    "query",
-  ],
+  "required": [],
   "type": "object",
 }
 `;
