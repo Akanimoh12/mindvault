@@ -63,8 +63,8 @@ Available tools:
 | ---------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `mindvault_setup_wallet`     | Create a Stellar wallet using the sponsored account protocol          | `"Create a wallet for me"`                                      |
 | `mindvault_wallet_info`      | Check wallet address and USDC balance                                 | `"What's my wallet balance?"`                                   |
-| `mindvault_browse`           | List available resources in the vault                                 | `"Show me what resources are available"`                        |
-| `mindvault_search`           | Search the catalog by keyword, price, type, and verification status   | `"Find verified links under 1 USDC"`                            |
+| `mindvault_browse`           | List catalog resources (same filters as search)                       | `"Show verified links under 1 USDC"`                            |
+| `mindvault_search`           | Search catalog by keyword, price, type, status, owner, tags, listed   | `"Find verified links under 1 USDC"`                            |
 | `mindvault_preview`          | Get details and price for a resource                                  | `"Preview resource swcn98besxpp6t1u8e77fqz3"`                   |
 | `mindvault_register`         | Register as a publisher using the agent's wallet                      | `"Register me as Alice, alice@example.com"`                     |
 | `mindvault_publish`          | Publish a resource and pay for verification via x402                  | `"Publish 'My Dataset' for 5 USDC at https://example.com/data"` |
@@ -186,7 +186,7 @@ The `PAYMENT-REQUIRED` header contains the price, destination wallet, network, a
 - The platform and agent operate from two separate Stellar wallets with visible on-chain activity
 - Creator earnings are tracked from actual payment settlements
 - The MCP server creates real sponsored accounts on Stellar
-- Catalog search and filtering are built: the web app's `CatalogSearch` UI and the MCP `mindvault_search` tool both filter by keyword (matched against title and description), price range, resource type, and verification status. Filters are sent to `GET /resources` and applied server-side (see [docs/api-examples.md](docs/api-examples.md#browsing-the-catalog))
+- Catalog search and filtering are built: the web app's `CatalogSearch` UI and the MCP `mindvault_browse` / `mindvault_search` tools filter by keyword (title and description), price range, resource type, verification status, owner, sort, and pagination. MCP also accepts `tags` and `listed` for client-side parity. Server-supported filters are sent to `GET /resources` (see [docs/api-examples.md](docs/api-examples.md#browsing-the-catalog))
 
 ## What Is Not Yet Built
 

@@ -56,6 +56,15 @@ import {
 import { safeErrorMessage } from "./redaction.js";
 import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState } from "./stateBackup.js";
+import { safeErrorMessage } from "./redaction.js";
+import {
+  applyClientCatalogFilters,
+  buildCatalogQueryString,
+  catalogFilterInputProperties,
+  describeCatalogFilters,
+  parseCatalogFilters,
+  type CatalogFilters,
+} from "./catalogFilters.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -413,69 +422,11 @@ async function getUsdcBalance(publicKey: string): Promise<string> {
   }
 }
 
-/** Fetch an account's USDC and native (XLM) balances from Horizon. */
-async function getAccountBalances(
-  publicKey: string,
-): Promise<{ usdc: string; native: string; funded: boolean }> {
-  const res = await httpFetch(`${HORIZON_URL}/accounts/${publicKey}`);
-  if (!res.ok) return { usdc: "0", native: "0", funded: false };
-  const data: any = await res.json();
-  const balances: any[] = data.balances ?? [];
-  const usdc = balances.find((b) => b.asset_type === "credit_alphanum4" && b.asset_code === "USDC");
-  const native = balances.find((b) => b.asset_type === "native");
-  return { usdc: usdc?.balance ?? "0", native: native?.balance ?? "0", funded: true };
-}
-
 function formatResource(r: any): string {
   return `[${r.id}] ${r.title} — $${r.price} USDC\n  ${r.description ?? ""}\n  ${r.accessUrl}`;
 }
 
-interface SearchFilters {
-  query: string;
-  minPrice?: string;
-  maxPrice?: string;
-  verificationStatus?: "pending" | "verified" | "rejected" | "skipped";
-  resourceType?: "file" | "link";
-}
-
-function normalizeSearchFilters(args: any): SearchFilters | null {
-  const query = typeof args?.query === "string" ? args.query.trim() : "";
-  if (!query) return null;
-
-  const minPrice = typeof args?.minPrice === "string" ? args.minPrice.trim() : "";
-  const maxPrice = typeof args?.maxPrice === "string" ? args.maxPrice.trim() : "";
-  const verificationStatus =
-    args?.verificationStatus === "pending" ||
-    args?.verificationStatus === "verified" ||
-    args?.verificationStatus === "rejected" ||
-    args?.verificationStatus === "skipped"
-      ? args.verificationStatus
-      : undefined;
-  const resourceType =
-    args?.resourceType === "file" || args?.resourceType === "link" ? args.resourceType : undefined;
-
-  return {
-    query,
-    minPrice: minPrice || undefined,
-    maxPrice: maxPrice || undefined,
-    verificationStatus,
-    resourceType,
-  };
-}
-
-function describeFilters(filters: SearchFilters): string {
-  const hasExtra =
-    filters.minPrice || filters.maxPrice || filters.verificationStatus || filters.resourceType;
-  if (!hasExtra) {
-    return `"${filters.query}"`;
-  }
-  const parts = [`query "${filters.query}"`];
-  if (filters.minPrice) parts.push(`min $${filters.minPrice}`);
-  if (filters.maxPrice) parts.push(`max $${filters.maxPrice}`);
-  if (filters.verificationStatus) parts.push(`status ${filters.verificationStatus}`);
-  if (filters.resourceType) parts.push(`type ${filters.resourceType}`);
-  return parts.join(", ");
-}
+export type SearchFilters = CatalogFilters;
 
 /**
  * Compares the agent wallet's USDC balance against an amount it is about to
@@ -626,39 +577,62 @@ export function listProfiles(): string {
   return [`Profiles (* = active):`, ...lines].join("\n");
 }
 
-export async function browse(): Promise<string> {
-  const res = await jsonFetch(`${BASE_URL}/resources`);
+export async function browse(filters: CatalogFilters = {}): Promise<string> {
+  const qs = buildCatalogQueryString(filters);
+  const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
+  const res = await jsonFetch(url);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
-  const items: any[] = res.data;
+  let items: any[] = Array.isArray(res.data) ? res.data : [];
+  items = applyClientCatalogFilters(items, filters);
   const body =
-    items.length === 0 ? "No resources listed yet." : items.map(formatResource).join("\n\n");
+    items.length === 0
+      ? filters.query ||
+        filters.minPrice ||
+        filters.maxPrice ||
+        filters.verificationStatus ||
+        filters.resourceType ||
+        filters.owner ||
+        filters.tags?.length ||
+        filters.listed !== undefined
+        ? `No resources match ${describeCatalogFilters(filters)}.`
+        : "No resources listed yet."
+      : items.map(formatResource).join("\n\n");
   // Warn when the catalog may be stale relative to the on-chain registry, based
   // on the server's cache headers. Silent when there is no cache metadata.
   const notice = cacheStalenessNotice(res.headers);
   return notice ? `${body}\n\n${notice}` : body;
 }
 
-export async function search(filtersOrQuery: string | SearchFilters): Promise<string> {
-  const filters: SearchFilters =
+export async function search(filtersOrQuery: string | CatalogFilters): Promise<string> {
+  const filters: CatalogFilters =
     typeof filtersOrQuery === "string" ? { query: filtersOrQuery } : filtersOrQuery;
 
-  if (!filters.query.trim()) return "Provide a non-empty search query.";
-  const queryParams = new URLSearchParams();
-  queryParams.set("search", filters.query);
-  if (filters.minPrice) queryParams.set("minPrice", filters.minPrice);
-  if (filters.maxPrice) queryParams.set("maxPrice", filters.maxPrice);
-  if (filters.verificationStatus) queryParams.set("verificationStatus", filters.verificationStatus);
-  if (filters.resourceType) queryParams.set("resourceType", filters.resourceType);
+  const hasCriteria = Boolean(
+    filters.query?.trim() ||
+    filters.minPrice ||
+    filters.maxPrice ||
+    filters.verificationStatus ||
+    filters.resourceType ||
+    filters.owner ||
+    filters.sort ||
+    filters.limit !== undefined ||
+    filters.offset !== undefined ||
+    (filters.tags && filters.tags.length > 0) ||
+    filters.listed !== undefined,
+  );
+  if (!hasCriteria) return "Provide a search query or at least one catalog filter.";
 
-  const res = await jsonFetch(`${BASE_URL}/resources?${queryParams.toString()}`);
+  const qs = buildCatalogQueryString(filters);
+  const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
+  const res = await jsonFetch(url);
   if (!res.ok) throw new Error(`Search failed: ${JSON.stringify(res.data)}`);
-  let items: any[] = res.data;
+  let items: any[] = Array.isArray(res.data) ? res.data : [];
 
-  // Filter client-side as well for unit tests compatibility
-  const q = filters.query.trim().toLowerCase();
-  items = items.filter((r) => `${r.title ?? ""} ${r.description ?? ""}`.toLowerCase().includes(q));
+  // Client-side keyword / tags / listed / skipped for unit-test compatibility
+  // and parity with fields the public catalog schema does not accept.
+  items = applyClientCatalogFilters(items, filters);
 
-  if (items.length === 0) return `No resources match ${describeFilters(filters)}.`;
+  if (items.length === 0) return `No resources match ${describeCatalogFilters(filters)}.`;
   return items.map(formatResource).join("\n\n");
 }
 
@@ -1496,50 +1470,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "mindvault_browse",
-      description: "List all available resources in the MindVault catalog.",
-      inputSchema: { type: "object", properties: {}, required: [] },
+      description:
+        "List resources in the MindVault catalog with the same optional filters as mindvault_search and GET /resources: keyword, price range, verification status, resource type, owner, sort, pagination, tags, and listed state.",
+      inputSchema: {
+        type: "object",
+        properties: { ...catalogFilterInputProperties },
+        required: [],
+      },
     },
     {
       name: "mindvault_search",
       description:
-        "Search the MindVault catalog by keyword and optional filters for price, resource type, and verification status. Uses server-side filtering and returns compact resource summaries.",
+        "Search the MindVault catalog by keyword and optional filters for price, resource type, verification status, owner, sort, pagination, tags, and listed state. Uses server-side filtering where supported and returns compact resource summaries.",
       inputSchema: {
         type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
-            examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
-          },
-          minPrice: {
-            type: "string",
-            description:
-              "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
-            examples: ["5.00", "10.50", "0.50"],
-          },
-          maxPrice: {
-            type: "string",
-            description:
-              "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
-            examples: ["20.00", "15.99", "100.00"],
-          },
-          verificationStatus: {
-            type: "string",
-            enum: ["pending", "verified", "rejected", "skipped"],
-            description:
-              "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
-            examples: ["verified"],
-          },
-          resourceType: {
-            type: "string",
-            enum: ["file", "link"],
-            description:
-              "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
-            examples: ["link", "file"],
-          },
-        },
-        required: ["query"],
+        properties: { ...catalogFilterInputProperties },
+        required: [],
       },
     },
     {
@@ -1857,11 +1803,13 @@ async function dispatchTool(name: string, args: any): Promise<string> {
       return useProfile(args.name as string);
     case "mindvault_list_profiles":
       return listProfiles();
-    case "mindvault_browse":
-      return browse();
+    case "mindvault_browse": {
+      const parsed = parseCatalogFilters(args);
+      return parsed.ok ? browse(parsed.filters) : parsed.error;
+    }
     case "mindvault_search": {
-      const filters = normalizeSearchFilters(args);
-      return filters ? search(filters) : "Provide a non-empty search query.";
+      const parsed = parseCatalogFilters(args, { requireCriteria: true });
+      return parsed.ok ? search(parsed.filters) : parsed.error;
     }
     case "mindvault_preview":
       return preview(args.resourceId as string);
