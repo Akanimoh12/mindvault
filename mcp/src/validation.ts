@@ -107,6 +107,25 @@ const USDC_AMOUNT: ArgumentSpec = {
 /** Confirmation flag for mainnet mutations (see mainnetGuardrails.ts). */
 const CONFIRM_MAINNET: ArgumentSpec = { kind: "flag" };
 
+/** Stellar public key (G... 56 chars). */
+const STELLAR_ADDRESS: ArgumentSpec = {
+  kind: "string",
+  maxLength: 56,
+  pattern: /^G[A-Z2-7]{55}$/,
+  patternHint: "a Stellar public key (G… , 56 chars)",
+};
+
+/** Metadata pointer (max 512 chars, supported prefix). */
+const METADATA_POINTER: ArgumentSpec = {
+  kind: "string",
+  required: true,
+  minLength: 1,
+  maxLength: 512,
+  pattern: /^(ipfs:\/\/|ar:\/\/|https?:\/\/|sha256:|sha-256:|0x)/i,
+  patternHint:
+    "a valid metadata pointer starting with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x (max 512 chars)",
+};
+
 /** Backup passphrases must survive a round-trip through stateBackup.ts. */
 const PASSPHRASE: ArgumentSpec = { kind: "string", required: true, minLength: 8, maxLength: 512 };
 
@@ -186,6 +205,26 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     passphrase: PASSPHRASE,
   },
   mindvault_metrics: { reset: { kind: "flag" } },
+  mindvault_update_metadata: {
+    resourceId: RESOURCE_ID,
+    metadata: METADATA_POINTER,
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_set_price: {
+    resourceId: RESOURCE_ID,
+    price: { ...USDC_AMOUNT, required: true },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_transfer_ownership: {
+    resourceId: RESOURCE_ID,
+    newCreator: { ...STELLAR_ADDRESS, required: true },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
+  mindvault_set_listed: {
+    resourceId: RESOURCE_ID,
+    listed: { kind: "flag", required: true },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────

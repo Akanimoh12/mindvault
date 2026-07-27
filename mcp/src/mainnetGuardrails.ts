@@ -20,6 +20,10 @@ export const MAINNET_GATED_TOOLS = [
   "mindvault_buy",
   "mindvault_register_onchain",
   "mindvault_reset",
+  "mindvault_update_metadata",
+  "mindvault_set_price",
+  "mindvault_transfer_ownership",
+  "mindvault_set_listed",
 ] as const;
 
 export type MainnetGatedTool = (typeof MAINNET_GATED_TOOLS)[number];
