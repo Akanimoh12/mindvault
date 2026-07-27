@@ -94,6 +94,22 @@ Publishes a link resource. The MCP server signs the x402 verification payment us
 
 > Troubleshooting: if `publish` returns an x402 verification error, the wallet is most likely under-funded. The required verification fee is small (well under $1) — re-check `mindvault_wallet_info` and re-fund if needed. For deeper x402 sign/pay debugging see [docs/x402-payment-troubleshooting.md](x402-payment-troubleshooting.md).
 
+### 5b. `mindvault_publish_status` _(optional)_
+
+Poll verification and on-chain sync after publish. Returns `verificationStatus` (`pending` | `verified` | `rejected` | `skipped`), `listed`, `onchainStatus`, and `onchainTxHash`. Pass `wait: true` to poll until verification settles (or `timeoutMs` elapses).
+
+**Input:**
+
+```json
+{
+  "resourceId": "swcn98besxpp6t1u8e77fqz3",
+  "wait": true,
+  "timeoutMs": 60000
+}
+```
+
+**Errors:** missing `resourceId` and HTTP 404s return deterministic messages so agents can retry or correct the id.
+
 ---
 
 ## Agent B — Discover and buy

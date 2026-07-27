@@ -68,6 +68,7 @@ Available tools:
 | `mindvault_preview`          | Get details and price for a resource                                  | `"Preview resource swcn98besxpp6t1u8e77fqz3"`                   |
 | `mindvault_register`         | Register as a publisher using the agent's wallet                      | `"Register me as Alice, alice@example.com"`                     |
 | `mindvault_publish`          | Publish a resource and pay for verification via x402                  | `"Publish 'My Dataset' for 5 USDC at https://example.com/data"` |
+| `mindvault_publish_status`   | Poll verification and on-chain sync status after publish              | `"Check publish status for swcn98besxpp6t1u8e77fqz3"`           |
 | `mindvault_buy`              | Pay USDC and access a resource via x402                               | `"Buy resource swcn98besxpp6t1u8e77fqz3"`                       |
 | `mindvault_purchase_history` | List locally persisted purchase receipts (filter by resource/network) | `"Show my purchase history for stellar:testnet"`                |
 | `mindvault_register_onchain` | Retry on-chain registration for a published, verified resource        | `"Register resource swcn98besxpp6t1u8e77fqz3 on-chain"`         |
