@@ -28,13 +28,13 @@ on-chain registry lookups use the deterministic fixtures in
 
 ## What it covers
 
-| Check | How |
-|-------|-----|
-| Tool listing | `client.listTools()` over the in-memory transport |
+| Check         | How                                                         |
+| ------------- | ----------------------------------------------------------- |
+| Tool listing  | `client.listTools()` over the in-memory transport           |
 | Catalog tools | `mindvault_browse`, `mindvault_search`, `mindvault_preview` |
-| Registry mock | `mindvault_registry_lookup` (seeded hit + miss) |
-| Wallet setup | `mindvault_setup_wallet` via mock `/create` |
-| Error shape | Unknown tool + missing wallet |
+| Registry mock | `mindvault_registry_lookup` (seeded hit + miss)             |
+| Wallet setup  | `mindvault_setup_wallet` via mock `/create`                 |
+| Error shape   | Unknown tool + missing wallet                               |
 
 ## Error handling contract
 
@@ -50,13 +50,18 @@ Clients (and this harness) treat either `isError` or a leading `Error:` line as
 failure. Soft, non-throwing outcomes (for example registry “not found” JSON)
 remain successful tool results with `isError` unset.
 
+The message _inside_ that envelope is structured: a summary line, a
+machine-readable `Source: … · Category: … · HTTP …` line, and a `Next:` step.
+See [mcp-error-reference.md](mcp-error-reference.md) for the source and category
+tables.
+
 ## Relation to the smoke test
 
-| | Integration harness | Smoke test |
-|--|---------------------|------------|
-| Transport | In-memory (Vitest) | Stdio child process |
-| Scope | List + representative tools | Full setup → buy flow |
-| Runner | `pnpm test` | `pnpm smoke` |
+|           | Integration harness         | Smoke test            |
+| --------- | --------------------------- | --------------------- |
+| Transport | In-memory (Vitest)          | Stdio child process   |
+| Scope     | List + representative tools | Full setup → buy flow |
+| Runner    | `pnpm test`                 | `pnpm smoke`          |
 
 Use the harness for fast, deterministic CI coverage of the MCP request surface;
 use the [smoke test](mcp-smoke-test.md) for an end-to-end agent path.

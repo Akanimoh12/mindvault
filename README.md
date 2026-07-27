@@ -76,7 +76,7 @@ Available tools:
 | `mindvault_registry_info`    | Return the on-chain vault-registry contract details                   | `"Show me registry info"`                                       |
 | `mindvault_registry_lookup`  | Look up a resource directly from the on-chain vault registry by ID    | `"Look up resource swcn98besxpp6t1u8e77fqz3 on-chain"`          |
 | `mindvault_tx_status`        | Look up a Stellar transaction status by hash                          | `"Check tx a1b2c3d4..."`                                        |
-| `mindvault_reset`            | Clear the persisted wallet and publisher API key from memory and disk | `"Reset my agent credentials"`                                  |
+| `mindvault_reset`            | Clear the persisted wallet and publisher API key; needs confirm: true | `"Reset my agent credentials"`                                  |
 
 ### Install
 
@@ -110,6 +110,10 @@ For a copy-pasteable, end-to-end agent session — wallet setup → register →
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
 
 For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
+
+Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
+
+Every outbound call runs under a configurable `AbortController` deadline, so a hung backend fails fast instead of blocking the agent. Idempotent reads additionally retry transient failures with bounded, jittered backoff — payments never do, since a replay could settle twice. See **[docs/mcp-timeouts-retries.md](docs/mcp-timeouts-retries.md)**.
 
 ## Project Structure
 
