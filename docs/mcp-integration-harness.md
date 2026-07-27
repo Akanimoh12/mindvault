@@ -32,7 +32,7 @@ on-chain registry lookups use the deterministic fixtures in
 | ------------- | ----------------------------------------------------------- |
 | Tool listing  | `client.listTools()` over the in-memory transport           |
 | Catalog tools | `mindvault_browse`, `mindvault_search`, `mindvault_preview` |
-| Registry mock | `mindvault_registry_lookup` (seeded hit + miss)             |
+| Registry mock | `mindvault_registry_lookup` (seeded hit + miss), `mindvault_registry_list` (pagination) |
 | Wallet setup  | `mindvault_setup_wallet` via mock `/create`                 |
 | Error shape   | Unknown tool + missing wallet                               |
 

@@ -1323,6 +1323,12 @@ describe("dispatchTool argument validation", () => {
     );
   });
 
+  it("rejects limit above the contract cap via dispatchTool", async () => {
+    await expect(dispatchTool("mindvault_registry_list", { limit: 50 })).rejects.toThrow(
+      "Invalid arguments for mindvault_registry_list",
+    );
+  });
+
   it("produces the same error message for the same invalid call", async () => {
     const first = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
     const second = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
