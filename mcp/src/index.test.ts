@@ -808,6 +808,152 @@ describe("buy – output shape for agent consumption", () => {
   });
 });
 
+// ── buy – purchase receipt persistence (#415) ──────────────────────────────
+
+describe("buy – purchase receipt persistence", () => {
+  let purchaseDir: string;
+
+  beforeEach(async () => {
+    _setAgentWallet(testWallet);
+    const { mkdtempSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    purchaseDir = mkdtempSync(join(tmpdir(), "mv-purchase-"));
+
+    const { _setPurchasesFilePath } = await import("./purchaseHistory.js");
+    _setPurchasesFilePath(join(purchaseDir, "purchases.json"));
+  });
+
+  afterEach(async () => {
+    _setAgentWallet(null);
+    const { rmSync } = await import("fs");
+    rmSync(purchaseDir, { recursive: true, force: true });
+
+    const { _setPurchasesFilePath } = await import("./purchaseHistory.js");
+    _setPurchasesFilePath(null);
+    vi.restoreAllMocks();
+  });
+
+  it("records purchase with resourceId, amount, network, txHash, and timestamp", async () => {
+    const resourcePayload = {
+      id: "res-purchase-001",
+      title: "Test Dataset",
+      price: "10.50",
+      accessUrl: "https://example.com/res-001",
+      txHash: "abc123txhash",
+      receipt: { amount: "10.50", paymentId: "pay-12345" },
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-purchase-001");
+
+    const { listPurchases } = await import("./purchaseHistory.js");
+    const purchases = listPurchases();
+    expect(purchases).toHaveLength(1);
+    expect(purchases[0]).toMatchObject({
+      resourceId: "res-purchase-001",
+      amount: "10.50",
+      network: expect.stringContaining("stellar"),
+      txHash: "abc123txhash",
+      receiptRef: "pay-12345",
+      title: "Test Dataset",
+    });
+    expect(purchases[0].timestamp).toBeDefined();
+  });
+
+  it("persists receipt to ~/.mindvault/purchases.json with deterministic structure", async () => {
+    const resourcePayload = {
+      id: "res-002",
+      title: "Tutorial",
+      price: "5.00",
+      accessUrl: "https://example.com/tut",
+      txHash: null,
+      receipt: { amount: "5.00", paymentId: null },
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-002");
+
+    const { readFileSync } = await import("fs");
+    const fileContent = JSON.parse(readFileSync(purchaseDir + "/purchases.json", "utf-8"));
+    expect(fileContent).toHaveProperty("version", 1);
+    expect(fileContent).toHaveProperty("purchases");
+    expect(fileContent.purchases).toHaveLength(1);
+    expect(fileContent.purchases[0]).toHaveProperty("resourceId");
+    expect(fileContent.purchases[0]).toHaveProperty("amount");
+    expect(fileContent.purchases[0]).toHaveProperty("network");
+    expect(fileContent.purchases[0]).toHaveProperty("timestamp");
+  });
+
+  it("handles missing txHash and receiptRef gracefully", async () => {
+    const resourcePayload = {
+      id: "res-003",
+      title: "Guide",
+      price: "2.50",
+      accessUrl: "https://example.com/guide",
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-003");
+
+    const { listPurchases } = await import("./purchaseHistory.js");
+    const purchases = listPurchases();
+    expect(purchases[0]).toMatchObject({
+      resourceId: "res-003",
+      txHash: null,
+      receiptRef: null,
+    });
+  });
+});
+
 // ── mindvault_register_onchain (#313) ───────────────────────────────────────
 
 describe("registerOnchain – happy path", () => {
@@ -1014,6 +1160,110 @@ describe("registerOnchain – error and retry messaging", () => {
     expect(typeof result).toBe("string");
     expect(result).toContain("registered");
     expect(result).toContain("res-success");
+  });
+});
+
+// ── setupWallet – failure diagnostics (#414) ─────────────────────────────────
+
+describe("setupWallet – sponsored account failure diagnostics", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  afterEach(() => {
+    _resetProfiles();
+    vi.restoreAllMocks();
+  });
+
+  it("returns actionable error when service returns 503 (unavailable)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "service temporarily unavailable" }, false, 503),
+    );
+
+    await expect(dispatchTool("mindvault_setup_wallet", {})).rejects.toThrow();
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("setup");
+      expect(msg).toContain("unavailable");
+      expect(msg).toMatch(/restarting|wait/i);
+    }
+  });
+
+  it("returns actionable error when service returns 429 (rate limited)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "too many requests" }, false, 429),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Rate limit");
+      expect(msg).toMatch(/wait.*retry/i);
+    }
+  });
+
+  it("includes service status and issue category in error output", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "account creation failed" }, false, 500),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Service:");
+      expect(msg).toContain("Status:");
+      expect(msg).toContain("Issue:");
+    }
+  });
+
+  it("does not leak internal service details in error message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        internalErrorCode: "SPONSOR_DB_FAILED",
+        debugStackTrace: "at Function.doSomething...",
+      }, false, 500),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).not.toContain("SPONSOR_DB_FAILED");
+      expect(msg).not.toContain("stackTrace");
+      expect(msg).not.toContain("at Function");
+    }
+  });
+
+  it("provides next steps without leaking internals", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ reason: "sponsorship quota exceeded" }, false, 400),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Next:");
+      expect(msg).toMatch(/malformed|client|issue/i);
+    }
+  });
+
+  it("handles network errors deterministically", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("ECONNREFUSED: Connection refused"),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Next:");
+      expect(msg).toMatch(/network|connect/i);
+    }
   });
 });
 
