@@ -35,7 +35,15 @@ import {
   mainnetAllowedFromEnv,
 } from "./mainnetGuardrails.js";
 import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
-import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
+import {
+  createMockFetch,
+  mockEnabledFromEnv,
+  mockRegistryLookup,
+  mockUpdateMetadata,
+  mockSetPrice,
+  mockTransferOwnership,
+  mockSetListed,
+} from "./mock.js";
 import {
   DEFAULT_PROFILE,
   isValidProfileName,
@@ -1356,6 +1364,344 @@ function stroopsToUsdc(stroops: bigint): string {
   return `${negative ? "-" : ""}${whole}.${frac.toString().padStart(7, "0")}`;
 }
 
+export function usdcToStroops(usdc: string): bigint {
+  const parts = usdc.split(".");
+  const whole = BigInt(parts[0] || "0");
+  const fracStr = (parts[1] || "").padEnd(7, "0").slice(0, 7);
+  const frac = BigInt(fracStr);
+  return whole * 10_000_000n + frac;
+}
+
+export async function updateMetadata(
+  resourceId: string,
+  metadata: string,
+): Promise<string> {
+  const wallet = requireWallet();
+  if (MOCK) return mockUpdateMetadata(resourceId, metadata);
+
+  const client = createRegistryClient({
+    contractId: REGISTRY_CONTRACT_ID,
+    rpcUrl: SOROBAN_RPC_URL,
+    networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+    publicKey: wallet.publicKey,
+  });
+
+  let tx: Awaited<ReturnType<typeof client.update_metadata>>;
+  try {
+    tx = await client.update_metadata({ id: resourceId, metadata });
+  } catch (err: any) {
+    if (isTimeoutError(err)) {
+      throw mcpError(
+        mapTransportError({
+          operation: `Update metadata failed for resource "${resourceId}"`,
+          source: "soroban",
+          error: err,
+        }),
+      );
+    }
+    throw mcpError(
+      mapRegistryError({
+        operation: `Update metadata failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const result = tx.result;
+  if (result.isErr()) {
+    const err = result.unwrapErr();
+    const notFound = err.message === RegistryErrors[2].message;
+    throw mcpError(
+      mapRegistryError({
+        operation: `Update metadata failed for resource "${resourceId}"`,
+        message: err.message,
+        notFound,
+      }),
+    );
+  }
+
+  const { Keypair } = await import("@stellar/stellar-sdk");
+  const keypair = Keypair.fromSecret(wallet.secretKey);
+  let sentTx;
+  try {
+    sentTx = await tx.signAndSend({
+      signTransaction: async (xdr: string) => {
+        const { Transaction } = await import("@stellar/stellar-sdk");
+        const stellarTx = new Transaction(xdr, REGISTRY_NETWORK_PASSPHRASE);
+        stellarTx.sign(keypair);
+        return stellarTx.toXDR();
+      },
+    });
+  } catch (err: any) {
+    throw mcpError(
+      mapRegistryError({
+        operation: `Update metadata submission failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const txHash = sentTx?.sendTransactionResponse?.hash ?? null;
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      metadata,
+      txHash,
+    },
+    null,
+    2,
+  );
+}
+
+export async function setPrice(
+  resourceId: string,
+  price: string,
+): Promise<string> {
+  const wallet = requireWallet();
+  if (MOCK) return mockSetPrice(resourceId, price);
+
+  const stroops = usdcToStroops(price);
+
+  const client = createRegistryClient({
+    contractId: REGISTRY_CONTRACT_ID,
+    rpcUrl: SOROBAN_RPC_URL,
+    networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+    publicKey: wallet.publicKey,
+  });
+
+  let tx: Awaited<ReturnType<typeof client.set_price>>;
+  try {
+    tx = await client.set_price({ id: resourceId, new_price: stroops });
+  } catch (err: any) {
+    if (isTimeoutError(err)) {
+      throw mcpError(
+        mapTransportError({
+          operation: `Set price failed for resource "${resourceId}"`,
+          source: "soroban",
+          error: err,
+        }),
+      );
+    }
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set price failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const result = tx.result;
+  if (result.isErr()) {
+    const err = result.unwrapErr();
+    const notFound = err.message === RegistryErrors[2].message;
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set price failed for resource "${resourceId}"`,
+        message: err.message,
+        notFound,
+      }),
+    );
+  }
+
+  const { Keypair } = await import("@stellar/stellar-sdk");
+  const keypair = Keypair.fromSecret(wallet.secretKey);
+  let sentTx;
+  try {
+    sentTx = await tx.signAndSend({
+      signTransaction: async (xdr: string) => {
+        const { Transaction } = await import("@stellar/stellar-sdk");
+        const stellarTx = new Transaction(xdr, REGISTRY_NETWORK_PASSPHRASE);
+        stellarTx.sign(keypair);
+        return stellarTx.toXDR();
+      },
+    });
+  } catch (err: any) {
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set price submission failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const txHash = sentTx?.sendTransactionResponse?.hash ?? null;
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      price,
+      txHash,
+    },
+    null,
+    2,
+  );
+}
+
+export async function transferOwnership(
+  resourceId: string,
+  newCreator: string,
+): Promise<string> {
+  const wallet = requireWallet();
+  if (MOCK) return mockTransferOwnership(resourceId, newCreator);
+
+  const client = createRegistryClient({
+    contractId: REGISTRY_CONTRACT_ID,
+    rpcUrl: SOROBAN_RPC_URL,
+    networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+    publicKey: wallet.publicKey,
+  });
+
+  let tx: Awaited<ReturnType<typeof client.transfer_ownership>>;
+  try {
+    tx = await client.transfer_ownership({ id: resourceId, new_creator: newCreator });
+  } catch (err: any) {
+    if (isTimeoutError(err)) {
+      throw mcpError(
+        mapTransportError({
+          operation: `Transfer ownership failed for resource "${resourceId}"`,
+          source: "soroban",
+          error: err,
+        }),
+      );
+    }
+    throw mcpError(
+      mapRegistryError({
+        operation: `Transfer ownership failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const result = tx.result;
+  if (result.isErr()) {
+    const err = result.unwrapErr();
+    const notFound = err.message === RegistryErrors[2].message;
+    throw mcpError(
+      mapRegistryError({
+        operation: `Transfer ownership failed for resource "${resourceId}"`,
+        message: err.message,
+        notFound,
+      }),
+    );
+  }
+
+  const { Keypair } = await import("@stellar/stellar-sdk");
+  const keypair = Keypair.fromSecret(wallet.secretKey);
+  let sentTx;
+  try {
+    sentTx = await tx.signAndSend({
+      signTransaction: async (xdr: string) => {
+        const { Transaction } = await import("@stellar/stellar-sdk");
+        const stellarTx = new Transaction(xdr, REGISTRY_NETWORK_PASSPHRASE);
+        stellarTx.sign(keypair);
+        return stellarTx.toXDR();
+      },
+    });
+  } catch (err: any) {
+    throw mcpError(
+      mapRegistryError({
+        operation: `Transfer ownership submission failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const txHash = sentTx?.sendTransactionResponse?.hash ?? null;
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      newCreator,
+      txHash,
+    },
+    null,
+    2,
+  );
+}
+
+export async function setListed(
+  resourceId: string,
+  listed: boolean,
+): Promise<string> {
+  const wallet = requireWallet();
+  if (MOCK) return mockSetListed(resourceId, listed);
+
+  const client = createRegistryClient({
+    contractId: REGISTRY_CONTRACT_ID,
+    rpcUrl: SOROBAN_RPC_URL,
+    networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+    publicKey: wallet.publicKey,
+  });
+
+  let tx: Awaited<ReturnType<typeof client.set_listed>>;
+  try {
+    tx = await client.set_listed({ id: resourceId, listed });
+  } catch (err: any) {
+    if (isTimeoutError(err)) {
+      throw mcpError(
+        mapTransportError({
+          operation: `Set listed failed for resource "${resourceId}"`,
+          source: "soroban",
+          error: err,
+        }),
+      );
+    }
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set listed failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const result = tx.result;
+  if (result.isErr()) {
+    const err = result.unwrapErr();
+    const notFound = err.message === RegistryErrors[2].message;
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set listed failed for resource "${resourceId}"`,
+        message: err.message,
+        notFound,
+      }),
+    );
+  }
+
+  const { Keypair } = await import("@stellar/stellar-sdk");
+  const keypair = Keypair.fromSecret(wallet.secretKey);
+  let sentTx;
+  try {
+    sentTx = await tx.signAndSend({
+      signTransaction: async (xdr: string) => {
+        const { Transaction } = await import("@stellar/stellar-sdk");
+        const stellarTx = new Transaction(xdr, REGISTRY_NETWORK_PASSPHRASE);
+        stellarTx.sign(keypair);
+        return stellarTx.toXDR();
+      },
+    });
+  } catch (err: any) {
+    throw mcpError(
+      mapRegistryError({
+        operation: `Set listed submission failed for resource "${resourceId}"`,
+        message: err?.message || String(err),
+      }),
+    );
+  }
+
+  const txHash = sentTx?.sendTransactionResponse?.hash ?? null;
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      listed,
+      txHash,
+    },
+    null,
+    2,
+  );
+}
+
 export async function registryLookup(resourceId: string): Promise<string> {
   if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
@@ -2156,6 +2502,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
     case "mindvault_metrics":
       return toolMetrics(flag(args, "reset"));
+    case "mindvault_update_metadata":
+      assertMainnetMutationAllowed(STELLAR_NETWORK, name, args);
+      return updateMetadata(
+        requiredString(args, "resourceId"),
+        requiredString(args, "metadata"),
+      );
+    case "mindvault_set_price":
+      assertMainnetMutationAllowed(STELLAR_NETWORK, name, args);
+      return setPrice(
+        requiredString(args, "resourceId"),
+        requiredString(args, "price"),
+      );
+    case "mindvault_transfer_ownership":
+      assertMainnetMutationAllowed(STELLAR_NETWORK, name, args);
+      return transferOwnership(
+        requiredString(args, "resourceId"),
+        requiredString(args, "newCreator"),
+      );
+    case "mindvault_set_listed":
+      assertMainnetMutationAllowed(STELLAR_NETWORK, name, args);
+      return setListed(
+        requiredString(args, "resourceId"),
+        flag(args, "listed")!,
+      );
     default:
       // Unreachable: validateToolArgs rejects unknown tools first. Kept so a
       // tool added to the spec table without a handler fails loudly.

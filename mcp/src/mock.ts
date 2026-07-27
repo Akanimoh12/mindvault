@@ -282,3 +282,59 @@ export function mockRegistryLookup(resourceId: string, contractId: string): stri
     2,
   );
 }
+
+export function mockUpdateMetadata(resourceId: string, metadata: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      metadata,
+      txHash: `MOCK_TX_UPDATE_META_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockSetPrice(resourceId: string, price: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      price,
+      txHash: `MOCK_TX_SET_PRICE_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockTransferOwnership(resourceId: string, newCreator: string): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      newCreator,
+      txHash: `MOCK_TX_TRANSFER_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
+export function mockSetListed(resourceId: string, listed: boolean): string {
+  return JSON.stringify(
+    {
+      status: "success",
+      resourceId,
+      listed,
+      txHash: `MOCK_TX_SET_LISTED_${resourceId}`,
+      source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}

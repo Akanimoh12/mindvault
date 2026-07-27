@@ -40,6 +40,10 @@ describe("MCP tool metadata", () => {
       "mindvault_backup_state",
       "mindvault_restore_state",
       "mindvault_metrics",
+      "mindvault_update_metadata",
+      "mindvault_set_price",
+      "mindvault_transfer_ownership",
+      "mindvault_set_listed",
     ];
 
   it("exposes the expected tool surface", () => {
