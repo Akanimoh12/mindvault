@@ -492,6 +492,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "updated_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "verified"
                       },
                       "val": {
@@ -605,6 +613,14 @@
                       },
                       "val": {
                         "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "updated_at"
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     },
                     {
@@ -726,6 +742,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "updated_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "verified"
                       },
                       "val": {
@@ -839,6 +863,14 @@
                       },
                       "val": {
                         "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "updated_at"
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     },
                     {
