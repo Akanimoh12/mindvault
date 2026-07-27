@@ -243,10 +243,6 @@ function isSorobanRpc(body: string): boolean {
   return parsed?.jsonrpc === "2.0" && typeof parsed?.method === "string";
 }
 
-/**
- * Stand-in for the on-chain registry client's lookup. Returns the same JSON
- * shape as the live path so agents see identical output in mock mode.
- */
 export function mockRegistryLookup(resourceId: string, contractId: string): string {
   const seeded: Record<string, { creator: string; price: string; metadata: string }> = {
     "mock-1": { creator: "GMOCKCREATOR1", price: "1.5000000", metadata: "Intro to Stellar" },
@@ -276,6 +272,63 @@ export function mockRegistryLookup(resourceId: string, contractId: string): stri
       metadata: hit.metadata,
       listed: true,
       tags: [],
+      contract: contractId,
+    },
+    null,
+    2,
+  );
+}
+
+const MOCK_REGISTRY_RESOURCES = [
+  {
+    id: "mock-1",
+    creator: "GMOCKCREATOR1",
+    price: "1.5000000 USDC",
+    metadata: "Intro to Stellar",
+    listed: true,
+    tags: [] as string[],
+  },
+  {
+    id: "mock-2",
+    creator: "GMOCKCREATOR2",
+    price: "0.5000000 USDC",
+    metadata: "x402 Cheat Sheet",
+    listed: true,
+    tags: [] as string[],
+  },
+];
+
+/**
+ * Stand-in for on-chain registry list(). Paginates the same seeded rows as lookup.
+ */
+export function mockRegistryList(start: number, limit: number, contractId: string): string {
+  const slice = MOCK_REGISTRY_RESOURCES.slice(start, start + limit);
+  if (slice.length === 0) {
+    const message =
+      start === 0 && MOCK_REGISTRY_RESOURCES.length === 0
+        ? "No resources registered on-chain yet (mock mode)."
+        : `No on-chain resources in range [${start}, ${start + limit}) (mock mode). Try a lower start index.`;
+    return JSON.stringify(
+      {
+        source: "on-chain (mock)",
+        start,
+        limit,
+        count: 0,
+        message,
+        resources: [],
+        contract: contractId,
+      },
+      null,
+      2,
+    );
+  }
+  return JSON.stringify(
+    {
+      source: "on-chain (mock)",
+      start,
+      limit,
+      count: slice.length,
+      resources: slice,
       contract: contractId,
     },
     null,

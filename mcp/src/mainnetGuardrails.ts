@@ -73,7 +73,7 @@ export function mainnetConfirmationRequiredError(toolName: string): Error {
       "This tool mutates state or spends funds on the public Stellar network.",
       "To proceed, pass confirmMainnet: true on this tool call,",
       "or set MINDVAULT_ALLOW_MAINNET=1 on the MCP server process.",
-      "Read-only tools (browse, search, preview, registry_lookup, tx_status, …) are unrestricted.",
+      "Read-only tools (browse, search, preview, registry_lookup, registry_list, tx_status, …) are unrestricted.",
     ].join(" "),
   );
 }

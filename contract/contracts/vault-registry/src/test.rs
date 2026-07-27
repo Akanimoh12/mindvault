@@ -3051,4 +3051,120 @@ fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
     assert_eq!(page.get(0).unwrap().id, r0);
     assert_eq!(page.get(1).unwrap().id, r1);
     assert_eq!(page.get(2).unwrap().id, r2);
+// ── updated_at ledger metadata (#365) ───────────────────────────────────────
+
+/// `register` stamps updated_at with the ledger sequence at call time.
+#[test]
+fn register_stamps_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(42);
+    let id = String::from_str(&env, "ts1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    assert_eq!(client.get(&id).updated_at, 42);
+}
+
+/// `set_price` updates updated_at to the ledger sequence at call time.
+#[test]
+fn set_price_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(10);
+    let id = String::from_str(&env, "ts2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 10);
+
+    env.ledger().set_sequence_number(55);
+    client.set_price(&id, &200i128);
+    assert_eq!(client.get(&id).updated_at, 55);
+}
+
+/// `update_metadata` updates updated_at to the ledger sequence at call time.
+#[test]
+fn update_metadata_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(7);
+    let id = String::from_str(&env, "ts3");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://old"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 7);
+
+    env.ledger().set_sequence_number(99);
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(client.get(&id).updated_at, 99);
+}
+
+/// `transfer_ownership` updates updated_at to the ledger sequence at call time.
+#[test]
+fn transfer_ownership_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(3);
+    let id = String::from_str(&env, "ts4");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 3);
+
+    let new_owner = Address::generate(&env);
+    env.ledger().set_sequence_number(200);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.get(&id).updated_at, 200);
+}
+
+/// updated_at is independent per resource and not shared across resources.
+#[test]
+fn updated_at_is_per_resource() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(1);
+    let id_a = String::from_str(&env, "tsa");
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger().set_sequence_number(2);
+    let id_b = String::from_str(&env, "tsb");
+    client.register(
+        &creator,
+        &id_b,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Mutate only b at ledger 50.
+    env.ledger().set_sequence_number(50);
+    client.set_price(&id_b, &999i128);
+
+    // a should still reflect ledger 1; b should reflect ledger 50.
+    assert_eq!(client.get(&id_a).updated_at, 1);
+    assert_eq!(client.get(&id_b).updated_at, 50);
 }
