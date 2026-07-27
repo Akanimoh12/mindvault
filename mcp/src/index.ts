@@ -23,7 +23,6 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { cacheStalenessNotice } from "./cacheStaleness.js";
 import {
   collectStartupDiagnostics,
@@ -35,6 +34,7 @@ import {
   formatMainnetDiagnostics,
   mainnetAllowedFromEnv,
 } from "./mainnetGuardrails.js";
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
 import {
   DEFAULT_PROFILE,
@@ -45,6 +45,15 @@ import {
   type ProfileState,
   type WalletProfile,
 } from "./profiles.js";
+import {
+  buildPublishStatusSnapshot,
+  isVerificationSettled,
+  normalizeIntervalMs,
+  normalizeTimeoutMs,
+  normalizeWaitFlag,
+  type PublishStatusFetch,
+} from "./publishStatus.js";
+import { safeErrorMessage } from "./redaction.js";
 import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState } from "./stateBackup.js";
 import { safeErrorMessage } from "./redaction.js";
@@ -646,6 +655,111 @@ export async function preview(resourceId: string): Promise<string> {
   );
 }
 
+/**
+ * Fetch one publish-status snapshot from the API (meta + verification endpoints).
+ * Deterministic errors: missing id, 404, and non-OK responses.
+ */
+async function fetchPublishStatusData(resourceId: string): Promise<PublishStatusFetch> {
+  // Sequential fetches keep meta + verification consistent for a single poll tick
+  // (avoids racing two parallel responses that could disagree mid-transition).
+  const metaRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
+  const verRes = await jsonFetch(`${BASE_URL}/resources/${resourceId}/verification`);
+
+  if (metaRes.status === 404 && verRes.status === 404) {
+    throw new Error(
+      `Resource "${resourceId}" not found. Confirm the id from mindvault_publish or mindvault_browse.`,
+    );
+  }
+
+  // Prefer meta for on-chain sync fields; verification endpoint may 404 briefly
+  // for brand-new resources, so allow meta-only when verification is missing.
+  if (!metaRes.ok && metaRes.status !== 404) {
+    throw new Error(
+      `Publish status meta failed [${metaRes.status}]: ${JSON.stringify(metaRes.data)}`,
+    );
+  }
+  if (!verRes.ok && verRes.status !== 404) {
+    throw new Error(
+      `Publish status verification failed [${verRes.status}]: ${JSON.stringify(verRes.data)}`,
+    );
+  }
+  if (!metaRes.ok && !verRes.ok) {
+    throw new Error(
+      `Resource "${resourceId}" not found. Confirm the id from mindvault_publish or mindvault_browse.`,
+    );
+  }
+
+  return {
+    meta: metaRes.ok ? metaRes.data : null,
+    verification: verRes.ok ? verRes.data : null,
+  };
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll resource verification / on-chain sync status after publish.
+ *
+ * Reports verificationStatus (pending | verified | rejected | skipped) and
+ * on-chain sync fields (onchainStatus, onchainTxHash). Pass wait: true to poll
+ * until verification settles or timeoutMs elapses.
+ */
+export async function publishStatus(args: {
+  resourceId?: string;
+  wait?: unknown;
+  timeoutMs?: unknown;
+  intervalMs?: unknown;
+}): Promise<string> {
+  const resourceId = (args.resourceId ?? "").trim();
+  if (!resourceId) {
+    throw new Error(
+      "resourceId is required. Pass the id returned by mindvault_publish (e.g. 'cm7x8y9z').",
+    );
+  }
+
+  const wait = normalizeWaitFlag(args.wait);
+  const timeoutMs = normalizeTimeoutMs(args.timeoutMs);
+  const intervalMs = normalizeIntervalMs(args.intervalMs);
+
+  let attempts = 0;
+  let timedOut = false;
+  const deadline = wait ? Date.now() + timeoutMs : Date.now();
+
+  // Always fetch at least once.
+  let data = await fetchPublishStatusData(resourceId);
+  attempts += 1;
+
+  while (wait) {
+    const status = data.verification?.status ?? data.meta?.verificationStatus ?? "pending";
+    if (isVerificationSettled(status)) break;
+    if (Date.now() >= deadline) {
+      timedOut = true;
+      break;
+    }
+    const remaining = deadline - Date.now();
+    await sleepMs(Math.min(intervalMs, Math.max(0, remaining)));
+    if (Date.now() >= deadline) {
+      // One last fetch after the wait window.
+      data = await fetchPublishStatusData(resourceId);
+      attempts += 1;
+      const last = data.verification?.status ?? data.meta?.verificationStatus ?? "pending";
+      timedOut = !isVerificationSettled(last);
+      break;
+    }
+    data = await fetchPublishStatusData(resourceId);
+    attempts += 1;
+  }
+
+  const snapshot = buildPublishStatusSnapshot(resourceId, data, {
+    polled: wait,
+    attempts,
+    timedOut,
+  });
+  return JSON.stringify(snapshot, null, 2);
+}
+
 async function register(name: string, email: string, walletAddress?: string): Promise<string> {
   const wallet = requireWallet();
   const res = await jsonFetch(`${BASE_URL}/publishers`, {
@@ -828,6 +942,31 @@ export async function buy(resourceId: string): Promise<string> {
     throw new Error(`Buy failed [${res.status}]: ${text}`);
   }
   const afterData = await res.json();
+  const txHash = afterData.txHash || null;
+  const receipt =
+    afterData.receipt && typeof afterData.receipt === "object" ? afterData.receipt : null;
+  const amount =
+    (receipt?.amount != null ? String(receipt.amount) : null) ??
+    (meta.ok && meta.data?.price != null ? String(meta.data.price) : null) ??
+    (afterData.price != null ? String(afterData.price) : "");
+  const title =
+    (typeof afterData.title === "string" && afterData.title) ||
+    (meta.ok && typeof meta.data?.title === "string" ? meta.data.title : undefined);
+
+  // Persist a local receipt so mindvault_purchase_history can list prior buys.
+  // Recording failures must not fail the successful purchase response.
+  try {
+    recordPurchase({
+      resourceId,
+      amount,
+      network: NETWORK,
+      txHash,
+      receiptRef: receipt?.paymentId != null ? String(receipt.paymentId) : null,
+      ...(title ? { title } : {}),
+    });
+  } catch (err) {
+    console.error("MindVault MCP: failed to persist purchase receipt:", safeErrorMessage(err));
+  }
 
   const summary = {
     before: beforeState,
@@ -836,7 +975,7 @@ export async function buy(resourceId: string): Promise<string> {
       purchased: true,
     },
     changedFields: beforeState ? ["purchased"] : ["id", "title", "price", "accessUrl", "purchased"],
-    txHash: afterData.txHash || null,
+    txHash,
   };
 
   return JSON.stringify(summary, null, 2);
@@ -1406,6 +1545,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "mindvault_publish_status",
+      description:
+        "Poll a published resource's verification and on-chain sync status. Returns verificationStatus (pending, verified, rejected, skipped), listed, onchainStatus, onchainTxHash, and optional verification details. Pass wait: true to poll until verification settles or timeoutMs elapses. Deterministic errors for missing resourceId and 404s.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          resourceId: {
+            type: "string",
+            description:
+              "The resource ID from mindvault_publish (or browse/search). Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001", "swcn98besxpp6t1u8e77fqz3"],
+          },
+          wait: {
+            type: "boolean",
+            description:
+              "When true, poll until verificationStatus is verified, rejected, or skipped (or until timeoutMs). Default false (single fetch).",
+          },
+          timeoutMs: {
+            type: "number",
+            description:
+              "Max wait time in milliseconds when wait is true (default 60000, max 300000).",
+            examples: [30000, 60000, 120000],
+          },
+          intervalMs: {
+            type: "number",
+            description:
+              "Delay between polls in milliseconds when wait is true (default 2000, min 200).",
+            examples: [1000, 2000, 5000],
+          },
+        },
+        required: ["resourceId"],
+      },
+    },
+    {
       name: "mindvault_buy",
       description:
         "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
@@ -1420,6 +1593,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["resourceId"],
+      },
+    },
+    {
+      name: "mindvault_purchase_history",
+      description:
+        "List locally persisted purchase receipts from successful mindvault_buy calls (~/.mindvault/purchases.json). Read-only. Optional filters: resourceId and network (exact match, e.g. stellar:testnet). Returns count + purchases (newest first), or an empty list when nothing matches.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          resourceId: {
+            type: "string",
+            description: "Optional. Only return receipts for this resource id. Example: 'cm7x8y9z'",
+            examples: ["cm7x8y9z", "res-001"],
+          },
+          network: {
+            type: "string",
+            description:
+              "Optional. Only return receipts recorded on this x402 network id. Example: 'stellar:testnet'",
+            examples: ["stellar:testnet", "stellar:pubnet"],
+          },
+        },
+        required: [],
       },
     },
     {
@@ -1631,8 +1826,17 @@ async function dispatchTool(name: string, args: any): Promise<string> {
         price: args.price as string,
         externalUrl: args.externalUrl as string,
       });
+    case "mindvault_publish_status":
+      return publishStatus({
+        resourceId: args.resourceId as string | undefined,
+        wait: args.wait,
+        timeoutMs: args.timeoutMs,
+        intervalMs: args.intervalMs,
+      });
     case "mindvault_buy":
       return buy(args.resourceId as string);
+    case "mindvault_purchase_history":
+      return purchaseHistoryTool(args as Record<string, unknown>);
     case "mindvault_register_onchain":
       return registerOnchain(args.resourceId as string);
     case "mindvault_agent_status":

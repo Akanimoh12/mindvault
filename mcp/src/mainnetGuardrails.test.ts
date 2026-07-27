@@ -77,9 +77,11 @@ describe("isMainnetGatedTool", () => {
       "mindvault_registry_info",
       "mindvault_registry_lookup",
       "mindvault_tx_status",
+      "mindvault_publish_status",
       "mindvault_check_bindings",
       "mindvault_agent_status",
       "mindvault_metrics",
+      "mindvault_purchase_history",
     ]) {
       expect(isMainnetGatedTool(t)).toBe(false);
     }

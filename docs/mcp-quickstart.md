@@ -94,6 +94,22 @@ Publishes a link resource. The MCP server signs the x402 verification payment us
 
 > Troubleshooting: if `publish` returns an x402 verification error, the wallet is most likely under-funded. The required verification fee is small (well under $1) — re-check `mindvault_wallet_info` and re-fund if needed. For deeper x402 sign/pay debugging see [docs/x402-payment-troubleshooting.md](x402-payment-troubleshooting.md).
 
+### 5b. `mindvault_publish_status` _(optional)_
+
+Poll verification and on-chain sync after publish. Returns `verificationStatus` (`pending` | `verified` | `rejected` | `skipped`), `listed`, `onchainStatus`, and `onchainTxHash`. Pass `wait: true` to poll until verification settles (or `timeoutMs` elapses).
+
+**Input:**
+
+```json
+{
+  "resourceId": "swcn98besxpp6t1u8e77fqz3",
+  "wait": true,
+  "timeoutMs": 60000
+}
+```
+
+**Errors:** missing `resourceId` and HTTP 404s return deterministic messages so agents can retry or correct the id.
+
 ---
 
 ## Agent B — Discover and buy
@@ -193,9 +209,23 @@ Pays the resource price in USDC via x402 and returns the protected content.
 
 > Troubleshooting: a `402 Payment Required` after `buy` means the payment didn't settle — usually insufficient USDC. Run `mindvault_wallet_info` to check the balance.
 
+Successful buys also append a local receipt under `~/.mindvault/purchases.json` for later inspection via `mindvault_purchase_history`.
+
 ---
 
-### 12. `mindvault_register_onchain`
+### 12. `mindvault_purchase_history`
+
+Read-only list of locally persisted purchase receipts. Optional filters:
+
+```json
+{ "resourceId": "abc123", "network": "stellar:testnet" }
+```
+
+Returns `{ count, purchases }` (newest first). Empty history returns `count: 0` with a clear message — invalid filter types raise a deterministic error.
+
+---
+
+### 13. `mindvault_register_onchain`
 
 Registers an already-published, verified resource on the vault-registry contract.
 `mindvault_publish` attempts this automatically, but if the on-chain step fails
