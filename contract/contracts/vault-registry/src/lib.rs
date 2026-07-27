@@ -19,6 +19,15 @@ use soroban_sdk::{
 
 // ~5s ledgers → 17,280 per day. Persistent entries are bumped ~30 days on each
 // write so an actively-managed resource is never archived out from under us.
+//
+// Read paths (`get`, `get_owner`, `exists`, all `list*` variants, and
+// `get_terms_hash`) also bump TTL for each persistent entry they touch.
+// A resource that is actively being read — browsed or paid for — is "hot"
+// and should not be archived. The bump uses the same threshold/amount as
+// writes so the policy is uniform and easy to reason about. Instance-storage
+// entries (Count, Admin, CreatorCount, Verifier, …) are **not** bumped on
+// reads: `bump_instance` is expensive relative to individual persistent
+// bumps and those entries are refreshed on every write anyway.
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -534,22 +543,28 @@ impl VaultRegistry {
     /// - `next_cursor` is `Some(next_index)` when more entries may exist after
     ///   this page, or `None` at end-of-list (including empty catalog / cursor
     ///   past the end).
+    /// - Each persistent entry (Index slot and Resource) that is successfully
+    ///   read has its TTL bumped to keep hot catalog entries alive.
     pub fn list_page(env: Env, cursor: u32, limit: u32) -> CatalogPage {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(20);
         let mut items: Vec<Resource> = Vec::new(&env);
         let mut i = cursor;
         while i < total && items.len() < page_size {
+            let idx_key = DataKey::Index(i);
             if let Some(id) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, String>(&DataKey::Index(i))
+                .get::<DataKey, String>(&idx_key)
             {
+                Self::bump_persistent(&env, &idx_key);
+                let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
                     .storage()
                     .persistent()
-                    .get::<DataKey, Resource>(&DataKey::Resource(id))
+                    .get::<DataKey, Resource>(&res_key)
                 {
+                    Self::bump_persistent(&env, &res_key);
                     items.push_back(resource);
                 }
             }
@@ -565,22 +580,28 @@ impl VaultRegistry {
     /// - `limit` is capped at `20`.
     /// - Delisted resources are skipped; relisted resources will reappear.
     /// - Returns an empty `Vec` if no listed resources fall in range.
+    /// - Each persistent entry (Index slot and Resource) that is successfully
+    ///   read has its TTL bumped to keep hot catalog entries alive.
     pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(20);
         let mut result: Vec<Resource> = Vec::new(&env);
         let mut i = start;
         while i < total && result.len() < page_size {
+            let idx_key = DataKey::Index(i);
             if let Some(id) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, String>(&DataKey::Index(i))
+                .get::<DataKey, String>(&idx_key)
             {
+                Self::bump_persistent(&env, &idx_key);
+                let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
                     .storage()
                     .persistent()
-                    .get::<DataKey, Resource>(&DataKey::Resource(id))
+                    .get::<DataKey, Resource>(&res_key)
                 {
+                    Self::bump_persistent(&env, &res_key);
                     if resource.listed {
                         result.push_back(resource);
                     }
@@ -596,6 +617,8 @@ impl VaultRegistry {
     /// - Results are ordered by global registration sequence for that creator.
     /// - `limit` is capped at `20`.
     /// - Returns empty `Vec` when `start` is beyond the creator's known items.
+    /// - Each persistent Resource entry that is successfully read has its TTL
+    ///   bumped to keep hot resources alive.
     pub fn list_by_creator(env: Env, creator: Address, start: u32, limit: u32) -> Vec<Resource> {
         let page_size = limit.min(20);
         let mut result: Vec<Resource> = Vec::new(&env);
@@ -612,11 +635,13 @@ impl VaultRegistry {
         let mut idx = start;
         while result.len() < page_size && idx < total {
             let id = list.get(idx).unwrap();
+            let res_key = DataKey::Resource(id.clone());
             if let Some(resource) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, Resource>(&DataKey::Resource(id.clone()))
+                .get::<DataKey, Resource>(&res_key)
             {
+                Self::bump_persistent(&env, &res_key);
                 result.push_back(resource);
             }
             idx += 1;
@@ -638,9 +663,18 @@ impl VaultRegistry {
     }
 
     /// Whether a resource with `id` is registered.
+    /// Bumps the entry's TTL when found, keeping hot resources alive.
     pub fn exists(env: Env, id: String) -> bool {
-        Self::validate_resource_id(&id).is_ok()
-            && env.storage().persistent().has(&DataKey::Resource(id))
+        if Self::validate_resource_id(&id).is_err() {
+            return false;
+        }
+        let key = DataKey::Resource(id);
+        if env.storage().persistent().has(&key) {
+            Self::bump_persistent(&env, &key);
+            true
+        } else {
+            false
+        }
     }
 
     /// Get the owner address of a resource. Errors with `NotFound` if it does not exist.
@@ -846,9 +880,16 @@ impl VaultRegistry {
     }
 
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
+    /// Bumps the entry's TTL on a successful read.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage().persistent().get(&key).ok_or(Error::NotFound)
+        let hash = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(hash)
     }
 }
 
@@ -950,10 +991,14 @@ impl VaultRegistry {
     }
 
     fn load(env: &Env, id: &String) -> Result<Resource, Error> {
-        env.storage()
+        let key = DataKey::Resource(id.clone());
+        let resource = env
+            .storage()
             .persistent()
-            .get(&DataKey::Resource(id.clone()))
-            .ok_or(Error::NotFound)
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(env, &key);
+        Ok(resource)
     }
 
     fn save(env: &Env, resource: &mut Resource) {
@@ -1053,5 +1098,7 @@ impl VaultRegistry {
 
 #[cfg(test)]
 pub(crate) const TTL_BUMP_AMOUNT: u32 = BUMP_AMOUNT;
+#[cfg(test)]
+pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 
 mod test;

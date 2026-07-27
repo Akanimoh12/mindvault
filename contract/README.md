@@ -168,6 +168,11 @@ apart, so update all three together.
 | `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
 | `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
 | `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
+| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -290,6 +295,12 @@ stellar contract deploy \
 
 The command prints the deployed contract ID — wire it into the server config so
 the backend can record resources on registration.
+
+> [!IMPORTANT]
+> Before deploying a new WASM to any network, complete the full
+> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
+> covers build verification, WASM size budget, network identity checks, binding
+> regeneration, admin role bootstrap, and post-deploy smoke tests.
 
 ### Testnet Deployment
 

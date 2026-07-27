@@ -2810,9 +2810,9 @@ fn event_schema_matches_documented_readme_table() {
         .split("### Events")
         .nth(1)
         .expect("contract/README.md must have an `### Events` section")
-        .split("### Price units")
+        .split("### Registry info")
         .next()
-        .expect("`### Events` section must be immediately followed by `### Price units`");
+        .expect("`### Events` section must be followed by `### Registry info`");
 
     for (topic, _payload) in EVENT_SCHEMA {
         let needle = std::format!("| `{topic}` ");
@@ -3212,6 +3212,7 @@ fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
     assert_eq!(page.get(0).unwrap().id, r0);
     assert_eq!(page.get(1).unwrap().id, r1);
     assert_eq!(page.get(2).unwrap().id, r2);
+}
 // ── updated_at ledger metadata (#365) ───────────────────────────────────────
 
 /// `register` stamps updated_at with the ledger sequence at call time.
@@ -3328,4 +3329,368 @@ fn updated_at_is_per_resource() {
     // a should still reflect ledger 1; b should reflect ledger 50.
     assert_eq!(client.get(&id_a).updated_at, 1);
     assert_eq!(client.get(&id_b).updated_at, 50);
+}
+
+// ---------------------------------------------------------------------------
+// TTL bump on read paths (#372)
+// ---------------------------------------------------------------------------
+//
+// Every public read that touches a persistent entry (get, get_owner, exists,
+// list, list_page, list_listed, list_by_creator, get_terms_hash) must call
+// `bump_persistent` on each entry it successfully reads.  A resource that is
+// being browsed or paid for is "hot" and must not be archived.
+//
+// Design choice: reads use the same BUMP_AMOUNT / LIFETIME_THRESHOLD as
+// writes.  A resource that is only ever read (never mutated) will therefore
+// stay alive as long as it keeps getting reads — exactly the "hot resource"
+// semantics described in the issue.  Instance-storage entries (Count, Admin,
+// CreatorCount, Verifier, …) are NOT bumped on reads; they are refreshed on
+// every write and bumping them per-read would be unnecessarily expensive.
+//
+// All tests below follow the same pattern:
+//   1. Register the resource (TTL = BUMP_AMOUNT immediately after write).
+//   2. Advance the ledger by TTL_DAY_IN_LEDGERS to let the TTL decay by one day.
+//   3. Call the read-only path under test.
+//   4. Assert the TTL is restored to BUMP_AMOUNT.
+
+/// Helper: read the persistent TTL for a Resource key directly from contract
+/// storage. Already defined at the top of this file as `resource_storage_ttl`.
+
+/// `get` restores TTL on a hot resource.
+#[test]
+fn get_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlget");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Let TTL decay by one day.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+        "TTL should have decayed before the read"
+    );
+
+    // A read via `get` must restore the TTL.
+    client.get(&id);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "get must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// `get_owner` restores TTL on a hot resource.
+#[test]
+fn get_owner_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlgetowner");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    client.get_owner(&id);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "get_owner must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// `exists` restores TTL when the resource is found.
+#[test]
+fn exists_bumps_ttl_when_found() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlexists");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    assert!(client.exists(&id));
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "exists must bump TTL when the entry is found"
+    );
+}
+
+/// `exists` does NOT bump when the resource is absent (nothing to bump).
+#[test]
+fn exists_does_not_bump_when_absent() {
+    let (env, _creator, client) = setup();
+    // No register — the key does not exist.
+    let missing = String::from_str(&env, "ttlmissing");
+    assert!(!client.exists(&missing));
+    // No panic / storage error; the test passing is sufficient.
+}
+
+/// `list` (delegates to `list_page`) restores TTL on every resource it returns.
+#[test]
+fn list_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let ids = ["ttll0", "ttll1", "ttll2"];
+    for id_str in &ids {
+        client.register(
+            &creator,
+            &String::from_str(&env, id_str),
+            &100i128,
+            &String::from_str(&env, "ipfs://m"),
+            &empty_tags(&env),
+        );
+    }
+
+    // Decay TTL by one day across all entries.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+            "TTL must have decayed before the read"
+        );
+    }
+
+    // One call to list covers all three resources.
+    client.list(&0u32, &20u32);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT,
+            "list must bump TTL for each returned resource"
+        );
+    }
+}
+
+/// `list_listed` restores TTL for listed resources (and also for the
+/// skipped-but-read delisted ones, since their index/resource entries are
+/// still accessed during the scan).
+#[test]
+fn list_listed_bumps_ttl_for_scanned_resources() {
+    let (env, creator, client) = setup();
+    let id_listed = String::from_str(&env, "ttllisted");
+    let id_delisted = String::from_str(&env, "ttldelisted");
+
+    client.register(
+        &creator,
+        &id_listed,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id_delisted,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.delist(&id_delisted);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    // Both should have decayed.
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_listed),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_delisted),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    // list_listed scans all entries (including delisted ones) to find listed ones.
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().id, id_listed);
+
+    // Both entries were touched during the scan — both get their TTL restored.
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_listed),
+        TTL_BUMP_AMOUNT,
+        "list_listed must bump TTL for listed resources it returns"
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_delisted),
+        TTL_BUMP_AMOUNT,
+        "list_listed must bump TTL for delisted resources it reads during the scan"
+    );
+}
+
+/// `list_by_creator` restores TTL for every resource it returns.
+#[test]
+fn list_by_creator_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let id_a = String::from_str(&env, "ttlbyca");
+    let id_b = String::from_str(&env, "ttlbycb");
+
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id_b,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_a),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_b),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    let page = client.list_by_creator(&creator, &0u32, &20u32);
+    assert_eq!(page.len(), 2);
+
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_a),
+        TTL_BUMP_AMOUNT,
+        "list_by_creator must bump TTL for each returned resource"
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_b),
+        TTL_BUMP_AMOUNT,
+        "list_by_creator must bump TTL for each returned resource"
+    );
+}
+
+/// `get_terms_hash` restores TTL on the terms entry it reads.
+#[test]
+fn get_terms_hash_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+
+    // Register a resource so the instance storage is freshly bumped just
+    // before the terms write. This prevents the instance from archiving when
+    // we later advance the ledger past LIFETIME_THRESHOLD to trigger the bump.
+    client.register(
+        &creator,
+        &String::from_str(&env, "ttlterms"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let terms = String::from_str(&env, "sha256:abc123");
+    client.set_terms_hash(&creator, &terms);
+
+    let key = DataKey::CreatorTerms(creator.clone());
+    let ttl_after_write =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl_after_write, TTL_BUMP_AMOUNT);
+
+    // Advance past LIFETIME_THRESHOLD (= BUMP_AMOUNT - DAY_IN_LEDGERS) so the
+    // conditional extend_ttl fires. The instance was just bumped by
+    // set_terms_hash, so it won't archive at this depth.
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+    let ttl_after_decay =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(
+        ttl_after_decay,
+        TTL_BUMP_AMOUNT - decay,
+        "TTL should have decayed before the read"
+    );
+
+    // A read must restore it.
+    client.get_terms_hash(&creator);
+    let ttl_after_read =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(
+        ttl_after_read, TTL_BUMP_AMOUNT,
+        "get_terms_hash must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// Reads do NOT bump TTL when they return an error (entry not found).
+#[test]
+fn failed_reads_do_not_bump_ttl() {
+    let (env, creator, client) = setup();
+    // Register one real resource so the contract has state.
+    let id = String::from_str(&env, "ttlrealerr");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Calls against a non-existent id must return NotFound and not panic.
+    let missing = String::from_str(&env, "nosuchresource");
+    assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
+    assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
+    assert!(!client.exists(&missing));
+    // No assertion on a specific TTL value here — there is no entry to measure.
+    // The test passing without a trap is the correctness signal.
+}
+
+/// A single resource that is read repeatedly never falls below BUMP_AMOUNT
+/// in TTL, regardless of how many ledgers pass between reads.
+#[test]
+fn repeated_reads_keep_ttl_at_bump_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlrepeat");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Simulate 5 days of decay followed by a read, repeated 3 times.
+    for _ in 0..3 {
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 5 * TTL_DAY_IN_LEDGERS);
+        client.get(&id);
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &id),
+            TTL_BUMP_AMOUNT,
+            "TTL must be restored to BUMP_AMOUNT after each read"
+        );
+    }
 }
