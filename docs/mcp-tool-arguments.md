@@ -95,6 +95,8 @@ on the failure rather than parse prose.
 | `mindvault_check_consistency` | `resourceId`           | yes      | resource id                                   |
 |                               | `expectedMetadataHash` | no       | [metadata digest](mcp-metadata-hash.md)       |
 | `mindvault_registry_lookup`   | `resourceId`           | yes      | resource id                                   |
+| `mindvault_registry_list`     | `start`                | no       | integer ≥ 0 (default 0)                       |
+|                               | `limit`                | no       | integer 1–20 (default 20; contract cap)       |
 | `mindvault_tx_status`         | `txHash`               | yes      | sha256 digest (64 hex chars)                  |
 | `mindvault_reset`             | `all`                  | no       | flag — clears every profile                   |
 | `mindvault_backup_state`      | `passphrase`           | yes      | 8–512 characters                              |

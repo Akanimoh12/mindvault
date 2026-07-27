@@ -322,6 +322,32 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "mindvault_registry_list",
+    description:
+      "List resources registered in the on-chain vault-registry contract with pagination (Soroban list). Returns compact summaries directly from Stellar, not the MindVault API catalog. Use start/limit to page through insertion order; limit is capped at 20 to match the contract. Empty pages return a clear message and next-step hint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "0-based index into the on-chain registry (default 0). Example: 0 for the first page, 20 for the second page when limit is 20.",
+          examples: [0, 20],
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description:
+            "Page size (1–20, default 20). The contract silently caps higher values at 20.",
+          examples: [20, 10],
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "mindvault_tx_status",
     description:
       "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",

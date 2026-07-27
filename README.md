@@ -79,6 +79,7 @@ Available tools:
 | `mindvault_agent_status`     | Check the verification agent's earnings and activity                  | `"What's the agent's status?"`                                  |
 | `mindvault_registry_info`    | Return the on-chain vault-registry contract details                   | `"Show me registry info"`                                       |
 | `mindvault_registry_lookup`  | Look up a resource directly from the on-chain vault registry by ID    | `"Look up resource swcn98besxpp6t1u8e77fqz3 on-chain"`          |
+| `mindvault_registry_list`    | Page through resources registered on-chain (Soroban `list`)           | `"List on-chain registry resources start 0 limit 20"`           |
 | `mindvault_tx_status`        | Look up a Stellar transaction status by hash                          | `"Check tx a1b2c3d4..."`                                        |
 | `mindvault_reset`            | Clear the persisted wallet and publisher API key; needs confirm: true | `"Reset my agent credentials"`                                  |
 

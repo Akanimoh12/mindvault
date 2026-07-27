@@ -28,6 +28,9 @@
  */
 
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
+import {
+  REGISTRY_LIST_MAX_LIMIT,
+} from "./registryPagination.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 // ── Spec model ────────────────────────────────────────────────────────────────
@@ -42,11 +45,15 @@ import { TOOL_DEFINITIONS } from "./tools.js";
  * - `hash`   — a metadata digest in the fixed format (see metadataHash.ts),
  *              normalized to its canonical `"<algorithm>:<hex>"` form
  */
-export type ArgumentKind = "string" | "enum" | "flag" | "hash";
+export type ArgumentKind = "string" | "enum" | "flag" | "hash" | "integer";
 
 export interface ArgumentSpec {
   kind: ArgumentKind;
   required?: boolean;
+  /** Inclusive minimum — `integer` only. */
+  min?: number;
+  /** Inclusive maximum — `integer` only. */
+  max?: number;
   /** Allowed literals — `enum` only. */
   values?: readonly string[];
   /** Minimum length after trimming — `string` only (default 1 when required). */
@@ -186,6 +193,10 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     expectedMetadataHash: { kind: "hash" },
   },
   mindvault_registry_lookup: { resourceId: RESOURCE_ID },
+  mindvault_registry_list: {
+    start: { kind: "integer", min: 0 },
+    limit: { kind: "integer", min: 1, max: REGISTRY_LIST_MAX_LIMIT },
+  },
   mindvault_tx_status: { txHash: { kind: "hash", required: true, bareHex: true } },
   mindvault_reset: { all: { kind: "flag" }, confirmMainnet: CONFIRM_MAINNET },
   mindvault_backup_state: { passphrase: PASSPHRASE },
@@ -283,6 +294,12 @@ function expectation(spec: ArgumentSpec): string {
       return "a boolean (true/false)";
     case "hash":
       return METADATA_HASH_FORMAT_HINT;
+    case "integer": {
+      const parts: string[] = ["an integer"];
+      if (spec.min !== undefined) parts.push(`≥ ${spec.min}`);
+      if (spec.max !== undefined) parts.push(`≤ ${spec.max}`);
+      return parts.join(" ");
+    }
     case "string": {
       if (spec.patternHint) return spec.patternHint;
       if (spec.maxLength) return `a string of up to ${spec.maxLength} characters`;
@@ -391,6 +408,56 @@ function validateEnum(
   return trimmed;
 }
 
+function validateInteger(
+  field: string,
+  value: unknown,
+  spec: ArgumentSpec,
+  issues: ValidationIssue[],
+): number | undefined {
+  let n: number;
+  if (typeof value === "number" && Number.isInteger(value)) {
+    n = value;
+  } else if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value.trim());
+    if (!Number.isInteger(parsed)) {
+      issues.push({
+        field,
+        code: "wrong_type",
+        message: `${field} must be ${expectation(spec)}; received ${typeName(value)}.`,
+      });
+      return undefined;
+    }
+    n = parsed;
+  } else {
+    issues.push({
+      field,
+      code: "wrong_type",
+      message: `${field} must be ${expectation(spec)}; received ${typeName(value)}.`,
+    });
+    return undefined;
+  }
+
+  const min = spec.min ?? Number.MIN_SAFE_INTEGER;
+  const max = spec.max ?? Number.MAX_SAFE_INTEGER;
+  if (n < min) {
+    issues.push({
+      field,
+      code: "too_short",
+      message: `${field} must be at least ${min}.`,
+    });
+    return undefined;
+  }
+  if (n > max) {
+    issues.push({
+      field,
+      code: "too_long",
+      message: `${field} must be at most ${max}.`,
+    });
+    return undefined;
+  }
+  return n;
+}
+
 function validateHash(
   field: string,
   value: unknown,
@@ -412,7 +479,7 @@ function validateHash(
 }
 
 /** Validated, normalized arguments for a tool call. */
-export type ValidatedArgs = Record<string, string | boolean>;
+export type ValidatedArgs = Record<string, string | boolean | number>;
 
 /**
  * Validate and normalize a tool call's arguments.
@@ -487,6 +554,11 @@ export function validateToolArgs(tool: string, rawArgs: unknown): ValidatedArgs 
         if (hash !== undefined) out[field] = hash;
         break;
       }
+      case "integer": {
+        const num = validateInteger(field, value, fieldSpec, issues);
+        if (num !== undefined) out[field] = num;
+        break;
+      }
       case "string": {
         const text = validateString(field, value, fieldSpec, issues);
         if (text !== undefined) out[field] = text;
@@ -517,6 +589,12 @@ export function optionalString(args: ValidatedArgs, field: string): string | und
 /** Read a validated flag, defaulting to false when the caller omitted it. */
 export function flag(args: ValidatedArgs, field: string): boolean {
   return args[field] === true;
+}
+
+/** Read an optional validated integer, defaulting when the caller omitted it. */
+export function optionalInt(args: ValidatedArgs, field: string, defaultValue: number): number {
+  const value = args[field];
+  return typeof value === "number" ? value : defaultValue;
 }
 
 /** Tool names advertised by this server, sorted. */

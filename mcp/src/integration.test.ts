@@ -53,6 +53,7 @@ describe("MCP integration harness", () => {
     expect(names).toContain("mindvault_preview");
     expect(names).toContain("mindvault_registry_info");
     expect(names).toContain("mindvault_registry_lookup");
+    expect(names).toContain("mindvault_registry_list");
     expect(names).toContain("mindvault_setup_wallet");
     expect(names.length).toBeGreaterThanOrEqual(15);
 
@@ -96,6 +97,20 @@ describe("MCP integration harness", () => {
     });
     expect(harnessIsToolError(miss)).toBe(false);
     expect(harnessResultText(miss)).toContain('"found": false');
+  });
+
+  it("calls mindvault_registry_list with mocked on-chain pagination", async () => {
+    const page = await harness.callTool("mindvault_registry_list", { start: 0, limit: 20 });
+    expect(harnessIsToolError(page)).toBe(false);
+    const text = harnessResultText(page);
+    expect(text).toContain("mock-1");
+    expect(text).toContain("mock-2");
+    expect(text).toContain('"count": 2');
+
+    const empty = await harness.callTool("mindvault_registry_list", { start: 99, limit: 20 });
+    expect(harnessIsToolError(empty)).toBe(false);
+    expect(harnessResultText(empty)).toContain('"count": 0');
+    expect(harnessResultText(empty)).toMatch(/No on-chain resources in range/);
   });
 
   it("returns deterministic Error: results for unknown tools and missing wallet", async () => {
