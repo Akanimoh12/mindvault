@@ -801,10 +801,7 @@ impl VaultRegistry {
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
         let key = DataKey::CreatorTerms(creator);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
     }
 }
 

@@ -24,6 +24,7 @@ describe("MCP tool metadata", () => {
       "mindvault_preview",
       "mindvault_register",
       "mindvault_publish",
+      "mindvault_publish_status",
       "mindvault_buy",
       "mindvault_register_onchain",
       "mindvault_agent_status",
