@@ -564,11 +564,75 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
         },
       },
-      required: ["resourceId", "tags"],
-            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation/payment on the public Stellar network.",
+      required: ["resourceId", "listed"],
+    },
+  },
+  {
+    name: "mindvault_check_state_permissions",
+    description:
+      "Verify the state file (~/.mindvault/state.json) has safe permissions (mode 0600). Warns when the file is world-readable or group-readable, which would expose wallet secret keys and API keys to other system users. Safe by default; run after any manual file operations or environment migration.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "mindvault_registry_health",
+    description:
+      "Check the health of every dependency the MCP server relies on: MindVault API, Horizon, Soroban RPC, vault-registry contract, and x402 network alignment. Returns per-dependency status (ok/error) with actionable failure messages. Does not leak secrets or environment variables.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "mindvault_import_wallet",
+    description:
+      "Import an existing Stellar wallet by providing a secret key (or reading MINDVAULT_AGENT_SECRET from the environment). Validates the key, optionally persists it to the active profile (or a named profile), and never logs the secret. Use this to restore a wallet from backup or connect to an existing identity.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        secretKey: {
+          type: "string",
+          description:
+            "Stellar secret key (S… , 56 chars) to import. If omitted, reads from MINDVAULT_AGENT_SECRET env var.",
+          examples: ["SCHZPJ..."],
+        },
+        profile: {
+          type: "string",
+          description:
+            "Optional profile name to import into. Defaults to the active profile.",
+          examples: ["testnet", "mainnet-publisher"],
+        },
+        persist: {
+          type: "boolean",
+          description:
+            "When true (default), save the imported wallet to the state file. When false, validate only and return the public key without writing to disk.",
+          examples: [true, false],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
         },
       },
-      required: ["resourceId", "listed"],
+      required: [],
+    },
+  },
+  {
+    name: "mindvault_rotate_publisher_key",
+    description:
+      "Rotate the publisher API key for the active profile. Calls the MindVault server rotation endpoint (POST /publishers/rotate-key), stores the new key in the state file, and returns the updated publisher ID. The old key is invalidated server-side. Requires an existing registration (mindvault_register).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        profile: {
+          type: "string",
+          description:
+            "Optional profile name to rotate the key for. Defaults to the active profile.",
+          examples: ["testnet", "mainnet-publisher"],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
+        },
+      },
+      required: [],
     },
   },
 ];
