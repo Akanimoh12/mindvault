@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 942740629408
+                    "lo": 529178608511
                   }
                 },
                 {
-                  "string": "ipfs://1\\\\Y\\\\\\\\_b_.J0\\\\u_yGiL\\\\:__pS883\\\\_T1-\\\\B\\\\\\\\/p_K3\\\\o/0K_ggb:-_LF4K8FU:FS:v\\\\\\\\I\\\\KeME\\\\KjAKLmp.Wr:LaC_R_\\\\j3\\\\\\\\_55.e.Jc__k4N\\\\\\\\I.NP7_a/_ZD\\\\j__757fD_.\\\\f\\\\3N\\\\_\\\\UY9\\\\xU6/5T\\\\cCk\\\\1C\\\\V\\\\1Hk_\\\\\\\\9lK3/6GGr__/\\\\_Lx2_\\\\-_Kd\\\\YJM0_:IkSS3AEq\\\\T7\\\\_8:7_N\\\\1WuC_.QZg\\\\oqB-wqjAW/Z6\\\\_DA5Mbf_\\\\Nz_X46:_2:a\\\\18\\\\_n8n_\\\\\\\\\\\\_kT:4_P__U_\\\\J_z\\\\NBG-J\\\\_/vzP8\\\\/x:0_DE_PHu\\\\H_s\\\\__ZD_qFcCyelH4_qKk/V_w-jtXqf3/tRpJN\\\\/_TGWZt-\\\\Z\\\\/_/J_C_b7/_7Zy\\\\\\\\5bs8H\\\\"
+                  "string": "ipfs://\\\\M\\\\LN/3rW_\\\\V\\\\Y2:iTMxTR\\\\:_/a:4/rr/:wZb._2rQ\\\\E:-\\\\A\\\\fqoMZ_Qc\\\\\\\\\\\\_:\\\\z7-xNRHI.Q__K:_yj.Aw\\\\Eti:3_o5s\\\\:Y_An6___\\\\2OxIlEL:-qSaR3Zk\\\\l-B\\\\Ths_/Iw_hk:\\\\k\\\\_b:lbJ\\\\06FI_OK3tdpZZl-\\\\b_\\\\_\\\\Ln9O/\\\\4YL1\\\\/R_G\\\\\\\\\\\\s4Sb8___\\\\/v0_3dk\\\\g_M_I\\\\39-jTBJP_fLIL_t_Ju8U\\\\58XyD4T\\\\3c6T\\\\\\\\O\\\\\\\\benE1Sd8u_\\\\Y\\\\_\\\\_\\\\q\\\\_\\\\/k\\\\XqBA\\\\/_VJ/\\\\\\\\0_u\\\\85L/gKtv.Jg__/_\\\\3n_msMm\\\\/0D:"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 },
                 {
-                  "string": "https://_HSu5:bK.\\\\6_Mn."
+                  "string": "https://YW\\\\\\\\Bw/fe_BS\\\\qp__W\\\\Z5tXPAZD_._Q_KY_iIRUuI_Q\\\\D9:B5v\\\\6E_CX\\\\\\\\\\\\\\\\:3ZUR\\\\Sx_x_4f\\\\Ffdj\\\\/_lGalA./7\\\\9/\\\\_vPcniF_qI:6.MJThv9/__RyZEPD\\\\s.RF_\\\\L\\\\_\\\\i\\\\Pu1/_/_\\\\_WS60.99XFB\\\\dhso"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 414136001429
+                    "lo": 682322022761
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "06u"
+                      "string": "gpt65tcs90"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "06u"
+                  "string": "gpt65tcs90"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "06u"
+                      "string": "gpt65tcs90"
                     }
                   ]
                 },
@@ -275,7 +275,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "06u"
+                        "string": "gpt65tcs90"
                       }
                     },
                     {
@@ -283,7 +283,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -291,7 +291,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://_HSu5:bK.\\\\6_Mn."
+                        "string": "https://YW\\\\\\\\Bw/fe_BS\\\\qp__W\\\\Z5tXPAZD_._Q_KY_iIRUuI_Q\\\\D9:B5v\\\\6E_CX\\\\\\\\\\\\\\\\:3ZUR\\\\Sx_x_4f\\\\Ffdj\\\\/_lGalA./7\\\\9/\\\\_vPcniF_qI:6.MJThv9/__RyZEPD\\\\s.RF_\\\\L\\\\_\\\\i\\\\Pu1/_/_\\\\_WS60.99XFB\\\\dhso"
                       }
                     },
                     {
@@ -301,7 +301,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 414136001429
+                          "lo": 682322022761
                         }
                       }
                     },
