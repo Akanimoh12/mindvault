@@ -67,7 +67,9 @@ always produces the same text, so agent behavior is reproducible.
 Outcomes that are expected rather than broken stay **successful** tool results
 with `isError` unset. The clearest case is an on-chain miss: `mindvault_registry_lookup`
 for an unregistered resource returns JSON with `found: false` and a `next` field
-carrying the same recovery action a hard error would have given:
+carrying the same recovery action a hard error would have given. An empty on-chain
+page from `mindvault_registry_list` is also a soft success: JSON with `count: 0`,
+a `message` explaining the range is empty, and `resources: []` (not an MCP error).
 
 ```json
 {

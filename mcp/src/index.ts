@@ -8,6 +8,7 @@ import {
   checkContractBindings,
   createRegistryClient,
   Errors as RegistryErrors,
+  listResources,
   networks as registryNetworks,
   normalizeX402Network,
   resolveStellarNetwork,
@@ -35,7 +36,22 @@ import {
   mainnetAllowedFromEnv,
 } from "./mainnetGuardrails.js";
 import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
-import { createMockFetch, mockEnabledFromEnv, mockRegistryLookup } from "./mock.js";
+import { createMockFetch, mockEnabledFromEnv, mockRegistryList, mockRegistryLookup } from "./mock.js";
+import { purchaseHistoryTool } from "./purchaseHistory.js";
+import {
+  REGISTRY_LIST_DEFAULT_LIMIT,
+  REGISTRY_LIST_DEFAULT_START,
+} from "./registryPagination.js";
+import {
+  flag,
+  optionalInt,
+  optionalString,
+  requiredString,
+  TOOL_ARGUMENT_SPECS,
+  UnknownToolError,
+  validateToolArgs,
+  type ValidatedArgs,
+} from "./validation.js";
 import {
   DEFAULT_PROFILE,
   isValidProfileName,
@@ -1434,6 +1450,82 @@ export async function registryLookup(resourceId: string): Promise<string> {
   );
 }
 
+/**
+ * Paginated list of resources from the on-chain vault registry (contract `list`).
+ * Data comes from Soroban, not the MindVault API catalog.
+ */
+export async function registryList(start: number, limit: number): Promise<string> {
+  if (MOCK) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
+
+  const client = createRegistryClient({
+    contractId: REGISTRY_CONTRACT_ID,
+    rpcUrl: SOROBAN_RPC_URL,
+    networkPassphrase: REGISTRY_NETWORK_PASSPHRASE,
+  });
+
+  let resources: Resource[];
+  try {
+    resources = await listResources(client, start, limit);
+  } catch (err: unknown) {
+    throw mcpError(
+      mapTransportError({
+        operation: `On-chain list failed (contract ${REGISTRY_CONTRACT_ID}, RPC ${SOROBAN_RPC_URL}, start ${start}, limit ${limit})`,
+        source: "soroban",
+        error: err,
+      }),
+    );
+  }
+
+  if (resources.length === 0) {
+    const message =
+      start === 0
+        ? "No resources registered on-chain yet."
+        : `No on-chain resources in range [${start}, ${start + limit}). Try a lower start index or call mindvault_registry_info for contract context.`;
+    return JSON.stringify(
+      {
+        source: "on-chain",
+        start,
+        limit,
+        count: 0,
+        message,
+        resources: [],
+        contract: REGISTRY_CONTRACT_ID,
+        network: REGISTRY_NETWORK_PASSPHRASE,
+        rpc: SOROBAN_RPC_URL,
+      },
+      null,
+      2,
+    );
+  }
+
+  const items = resources.map((resource) => {
+    const priceUsdc = stroopsToUsdc(BigInt(resource.price as unknown as bigint));
+    return {
+      id: resource.id,
+      creator: resource.creator,
+      price: `${priceUsdc} USDC`,
+      metadata: resource.metadata,
+      listed: resource.listed,
+      tags: resource.tags,
+    };
+  });
+
+  return JSON.stringify(
+    {
+      source: "on-chain",
+      start,
+      limit,
+      count: items.length,
+      resources: items,
+      contract: REGISTRY_CONTRACT_ID,
+      network: REGISTRY_NETWORK_PASSPHRASE,
+      rpc: SOROBAN_RPC_URL,
+    },
+    null,
+    2,
+  );
+}
+
 function registryInfo(): string {
   const info: {
     contractId: string;
@@ -1697,6 +1789,116 @@ function toolMetrics(reset: boolean): string {
     );
   }
   return JSON.stringify(snapshot, null, 2);
+}
+
+/** Tools in ListTools that validate arguments inside the handler (legacy). */
+const TOOLS_WITHOUT_ARG_VALIDATION = new Set([
+  "mindvault_publish_status",
+  "mindvault_purchase_history",
+]);
+
+function isDispatchableTool(name: string): boolean {
+  return name in TOOL_ARGUMENT_SPECS || TOOLS_WITHOUT_ARG_VALIDATION.has(name);
+}
+
+/**
+ * Route a validated tool call to its implementation. Used by the MCP CallTool
+ * handler and by unit tests.
+ */
+export async function dispatchTool(name: string, rawArgs: unknown): Promise<string> {
+  if (!isDispatchableTool(name)) {
+    throw new UnknownToolError(name);
+  }
+
+  const args: ValidatedArgs =
+    name in TOOL_ARGUMENT_SPECS ? validateToolArgs(name, rawArgs) : {};
+
+  assertMainnetMutationAllowed(
+    NETWORK,
+    name,
+    typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+      ? (rawArgs as Record<string, unknown>)
+      : undefined,
+  );
+
+  const rawRecord =
+    typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+      ? (rawArgs as Record<string, unknown>)
+      : {};
+
+  switch (name) {
+    case "mindvault_setup_wallet":
+      return setupWallet(optionalString(args, "profile"));
+    case "mindvault_wallet_info":
+      return walletInfo();
+    case "mindvault_use_profile":
+      return useProfile(requiredString(args, "name"));
+    case "mindvault_list_profiles":
+      return listProfiles();
+    case "mindvault_browse": {
+      const parsed = parseCatalogFilters(rawRecord);
+      return parsed.ok ? browse(parsed.filters) : parsed.error;
+    }
+    case "mindvault_search": {
+      const parsed = parseCatalogFilters(rawRecord, { requireCriteria: true });
+      return parsed.ok ? search(parsed.filters) : parsed.error;
+    }
+    case "mindvault_preview":
+      return preview(requiredString(args, "resourceId"));
+    case "mindvault_register":
+      return register(
+        requiredString(args, "name"),
+        requiredString(args, "email"),
+        optionalString(args, "walletAddress"),
+      );
+    case "mindvault_publish":
+      return publish({
+        title: requiredString(args, "title"),
+        description: optionalString(args, "description"),
+        price: requiredString(args, "price"),
+        externalUrl: requiredString(args, "externalUrl"),
+      });
+    case "mindvault_publish_status":
+      return publishStatus(rawRecord);
+    case "mindvault_buy":
+      return buy(requiredString(args, "resourceId"));
+    case "mindvault_purchase_history":
+      return purchaseHistoryTool(rawRecord);
+    case "mindvault_register_onchain":
+      return registerOnchain(requiredString(args, "resourceId"));
+    case "mindvault_agent_status":
+      return agentStatus();
+    case "mindvault_registry_info":
+      return registryInfo();
+    case "mindvault_network_profile":
+      return networkProfile();
+    case "mindvault_check_bindings":
+      return checkBindings();
+    case "mindvault_check_consistency":
+      return checkConsistency(
+        requiredString(args, "resourceId"),
+        optionalString(args, "expectedMetadataHash"),
+      );
+    case "mindvault_registry_lookup":
+      return registryLookup(requiredString(args, "resourceId"));
+    case "mindvault_registry_list":
+      return registryList(
+        optionalInt(args, "start", REGISTRY_LIST_DEFAULT_START),
+        optionalInt(args, "limit", REGISTRY_LIST_DEFAULT_LIMIT),
+      );
+    case "mindvault_tx_status":
+      return txStatus(requiredString(args, "txHash"));
+    case "mindvault_reset":
+      return resetState(flag(args, "all"), rawRecord.confirm);
+    case "mindvault_backup_state":
+      return backupState(requiredString(args, "passphrase"));
+    case "mindvault_restore_state":
+      return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
+    case "mindvault_metrics":
+      return toolMetrics(flag(args, "reset"));
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
@@ -1984,6 +2186,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "mindvault_registry_list",
+      description:
+        "List resources registered in the on-chain vault-registry contract with pagination (Soroban list). Returns compact summaries directly from Stellar, not the MindVault API catalog. Use start/limit to page through insertion order; limit is capped at 20 to match the contract. Empty pages return a clear message and next-step hint.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          start: {
+            type: "integer",
+            minimum: 0,
+            description:
+              "0-based index into the on-chain registry (default 0). Example: 0 for the first page, 20 for the second page when limit is 20.",
+            examples: [0, 20],
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: 20,
+            description:
+              "Page size (1–20, default 20). The contract silently caps higher values at 20.",
+            examples: [20, 10],
+          },
+        },
+        required: [],
+      },
+    },
+    {
       name: "mindvault_tx_status",
       description:
         "Look up the status of a Stellar transaction by hash via Soroban RPC. Returns SUCCESS, FAILED, or NOT_FOUND along with ledger number, close time, application order, and XDR envelopes. Useful for debugging on-chain registration failures.",
@@ -2085,83 +2313,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
   ],
 }));
-
-  switch (name) {
-    case "mindvault_setup_wallet":
-      return setupWallet(optionalString(args, "profile"));
-    case "mindvault_wallet_info":
-      return walletInfo();
-    case "mindvault_use_profile":
-      return useProfile(requiredString(args, "name"));
-    case "mindvault_list_profiles":
-      return listProfiles();
-    case "mindvault_browse": {
-      const parsed = parseCatalogFilters(args);
-      return parsed.ok ? browse(parsed.filters) : parsed.error;
-    }
-    case "mindvault_search": {
-      const parsed = parseCatalogFilters(args, { requireCriteria: true });
-      return parsed.ok ? search(parsed.filters) : parsed.error;
-    }
-    case "mindvault_preview":
-      return preview(requiredString(args, "resourceId"));
-    case "mindvault_register":
-      return register(
-        requiredString(args, "name"),
-        requiredString(args, "email"),
-        optionalString(args, "walletAddress"),
-      );
-    case "mindvault_publish":
-      return publish({
-        title: requiredString(args, "title"),
-        description: optionalString(args, "description"),
-        price: requiredString(args, "price"),
-        externalUrl: requiredString(args, "externalUrl"),
-      });
-    case "mindvault_publish_status":
-      return publishStatus({
-        resourceId: args.resourceId as string | undefined,
-        wait: args.wait,
-        timeoutMs: args.timeoutMs,
-        intervalMs: args.intervalMs,
-      });
-    case "mindvault_buy":
-      return buy(args.resourceId as string);
-    case "mindvault_purchase_history":
-      return purchaseHistoryTool(args as Record<string, unknown>);
-    case "mindvault_register_onchain":
-      return registerOnchain(requiredString(args, "resourceId"));
-    case "mindvault_agent_status":
-      return agentStatus();
-    case "mindvault_registry_info":
-      return registryInfo();
-    case "mindvault_network_profile":
-      return networkProfile();
-    case "mindvault_check_bindings":
-      return checkBindings();
-    case "mindvault_check_consistency":
-      return checkConsistency(
-        requiredString(args, "resourceId"),
-        optionalString(args, "expectedMetadataHash"),
-      );
-    case "mindvault_registry_lookup":
-      return registryLookup(requiredString(args, "resourceId"));
-    case "mindvault_tx_status":
-      return txStatus(requiredString(args, "txHash"));
-    case "mindvault_reset":
-      return resetState(args.all === true, args.confirm);
-    case "mindvault_backup_state":
-      return backupState(requiredString(args, "passphrase"));
-    case "mindvault_restore_state":
-      return restoreStateTool(requiredString(args, "blob"), requiredString(args, "passphrase"));
-    case "mindvault_metrics":
-      return toolMetrics(flag(args, "reset"));
-    default:
-      // Unreachable: validateToolArgs rejects unknown tools first. Kept so a
-      // tool added to the spec table without a handler fails loudly.
-      throw new Error(`Unknown tool: ${name}`);
-  }
-}
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
