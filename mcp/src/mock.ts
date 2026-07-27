@@ -195,7 +195,34 @@ export function createMockFetch(): typeof fetch {
         return json({ onchainStatus: "registered", onchainTxHash: `MOCK_TX_${id}` });
       }
       if (sub === "meta" && method === "GET") {
-        return resource ? json(resource) : json({ error: "not found" }, 404);
+        return resource
+          ? json({
+              ...resource,
+              onchainStatus: "registered",
+              onchainTxHash: `MOCK_TX_${id}`,
+              contentHash: `mock-hash-${id}`,
+              listed: resource.verificationStatus === "verified",
+            })
+          : json({ error: "not found" }, 404);
+      }
+      if (sub === "verification" && method === "GET") {
+        return resource
+          ? json({
+              resourceId: resource.id,
+              title: resource.title,
+              status: resource.verificationStatus,
+              listed: resource.verificationStatus === "verified",
+              verification:
+                resource.verificationStatus === "verified"
+                  ? {
+                      isOriginal: true,
+                      confidence: 0.95,
+                      flags: [],
+                      checkedAt: new Date().toISOString(),
+                    }
+                  : null,
+            })
+          : json({ error: "not found" }, 404);
       }
       if (sub === undefined && method === "GET") {
         return resource

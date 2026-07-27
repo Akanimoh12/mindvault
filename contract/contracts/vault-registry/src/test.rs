@@ -1,8 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::alloc::format;
-use crate::alloc::string::ToString;
+use alloc::{format, string::ToString};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
@@ -1429,7 +1428,7 @@ fn update_metadata_rejects_empty() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "ipfs://valid"),
+        &String::from_str(&env, "ipfs://QmOriginal"),
         &empty_tags(&env),
     );
     let empty = String::from_str(&env, "");
@@ -1439,7 +1438,7 @@ fn update_metadata_rejects_empty() {
     );
     assert_eq!(
         client.get(&id).metadata,
-        String::from_str(&env, "ipfs://valid")
+        String::from_str(&env, "ipfs://QmOriginal")
     );
 }
 
@@ -1572,6 +1571,27 @@ fn update_metadata_failed_validation_emits_no_event() {
     assert_eq!(
         client.get(&id).metadata,
         String::from_str(&env, "ipfs://valid")
+    );
+
+    // No updmeta event should be emitted when the call fails.
+    let events = collect_updmeta_events(&env, &client.address);
+    assert_eq!(
+        events.len(),
+        0,
+        "failed update_metadata must not emit any updmeta event"
+    );
+}
+
+#[test]
+fn update_metadata_too_long_emits_no_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evtnoemit2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
     );
 
     let too_long = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
@@ -2241,6 +2261,83 @@ fn topic0_symbol(env: &Env, topics: &soroban_sdk::Vec<Val>) -> Option<Symbol> {
     Symbol::try_from_val(env, &topics.get(0)?).ok()
 }
 
+// ---------------------------------------------------------------------------
+// Tag index repair design (#429)
+// ---------------------------------------------------------------------------
+//
+// No on-chain tag index exists yet (see docs/tag-index-repair-design.md), but
+// a future one's repair path could rebuild id->tags associations either by
+// reading `Resource.tags` directly or by replaying `register`/`settags`
+// events. This test backs the ADR's "no third source of truth needed" claim
+// by reconstructing tag state purely from event replay — never calling
+// `get` — and checking it against `Resource.tags` exactly.
+#[test]
+fn register_then_settags_events_reconstruct_current_tags() {
+    let (env, creator, client) = setup();
+
+    let id_a = String::from_str(&env, "replaytaga");
+    let id_b = String::from_str(&env, "replaytagb");
+    let metadata = String::from_str(&env, "ipfs://m");
+
+    // The Soroban test event log only reliably reflects the most recent
+    // invocation (see `freeze_metadata_sets_flag_and_emits_event`'s comment
+    // on this), so record the last event's decoded tag state immediately
+    // after each call rather than replaying `env.events().all()` once at
+    // the end.
+    let last_settags_tags = |env: &Env| -> (String, Vec<String>) {
+        let (_, topics, data) = env.events().all().last().unwrap();
+        let event_id: String =
+            <String as TryFromVal<Env, Val>>::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+        let (_prev, next): (Vec<String>, Vec<String>) = data.try_into_val(env).unwrap();
+        (event_id, next)
+    };
+    let last_register_tags = |env: &Env| -> (String, Vec<String>) {
+        let (_, _, data) = env.events().all().last().unwrap();
+        let resource: Resource = data.try_into_val(env).unwrap();
+        (resource.id, resource.tags)
+    };
+
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &metadata,
+        &tags(&env, &["alpha", "beta"]),
+    );
+    let (rid, _) = last_register_tags(&env);
+    assert_eq!(rid, id_a);
+
+    client.register(&creator, &id_b, &100i128, &metadata, &empty_tags(&env));
+    let (rid, _) = last_register_tags(&env);
+    assert_eq!(rid, id_b);
+
+    client.set_tags(&id_a, &tags(&env, &["gamma"]));
+    let (eid, _) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    client.set_tags(&id_b, &tags(&env, &["delta", "epsilon"]));
+    let (eid, reconstructed_b) = last_settags_tags(&env);
+    assert_eq!(eid, id_b);
+
+    client.set_tags(&id_a, &empty_tags(&env));
+    let (eid, _) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    client.set_tags(&id_a, &tags(&env, &["zeta"]));
+    let (eid, reconstructed_a) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    assert_eq!(reconstructed_a, client.get(&id_a).tags);
+    assert_eq!(reconstructed_b, client.get(&id_b).tags);
+
+    // Sanity: prove replay tracked the final mutation, not just the initial register.
+    assert_eq!(client.get(&id_a).tags.len(), 1);
+    assert_eq!(
+        client.get(&id_a).tags.get(0).unwrap(),
+        String::from_str(&env, "zeta")
+    );
+}
+
 #[test]
 fn full_workflow_emits_exactly_the_documented_events() {
     let (env, alice, client) = setup();
@@ -2320,7 +2417,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.cancel_transfer(&r2);
     record(&env, &client, &mut observed);
 
-    client.set_terms_hash(&alice, &String::from_str(&env, "terms-hash"));
+    client.set_terms_hash(&alice, &String::from_str(&env, "termshash"));
     record(&env, &client, &mut observed);
 
     let admin1 = Address::generate(&env);

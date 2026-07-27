@@ -103,10 +103,10 @@ sequenceDiagram
 
 The MCP server holds two pieces of state per wallet profile across tool calls:
 
-| State                               | Set by                   | Used by                                                                             |
-| ----------------------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
-| `wallet` `{ publicKey, secretKey }` | `mindvault_setup_wallet` | `mindvault_register`, `mindvault_publish`, `mindvault_buy`, `mindvault_wallet_info` |
-| `apiKey`                            | `mindvault_register`     | `mindvault_publish`, `mindvault_register_onchain`                                   |
+| State                                    | Set by                   | Used by                                                                             |
+| ---------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
+| `agentWallet` `{ publicKey, secretKey }` | `mindvault_setup_wallet` | `mindvault_register`, `mindvault_publish`, `mindvault_buy`, `mindvault_wallet_info` |
+| `agentApiKey`                            | `mindvault_register`     | `mindvault_publish`                                                                 |
 
 Both are persisted to `~/.mindvault/state.json` (mode `0600`) and reloaded on
 restart, so a new session does not have to re-create the wallet or re-register.
@@ -119,16 +119,17 @@ permissions, and backup path are covered in
 
 ## Tool Summary
 
-| Tool                     | API Call(s)                                      | Stellar/Soroban                                 |
-| ------------------------ | ------------------------------------------------ | ----------------------------------------------- |
-| `mindvault_setup_wallet` | `POST /create` (sponsored service)               | Creates account + trustline                     |
-| `mindvault_wallet_info`  | Horizon `/accounts/:key`                         | Reads USDC balance                              |
-| `mindvault_browse`       | `GET /resources`                                 | None                                            |
-| `mindvault_preview`      | `GET /resources/:id/meta`                        | None                                            |
-| `mindvault_register`     | `POST /publishers`                               | None                                            |
-| `mindvault_publish`      | `POST /resources`, `POST /verify-content` (x402) | Signs + settles USDC payment to platform wallet |
-| `mindvault_buy`          | `GET /resources/:id` (x402)                      | Signs + settles USDC payment to creator wallet  |
-| `mindvault_agent_status` | `GET /agent/status`                              | None                                            |
+| Tool                         | API Call(s)                                      | Stellar/Soroban                                                        |
+| ---------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `mindvault_setup_wallet`     | `POST /create` (sponsored service)               | Creates account + trustline                                            |
+| `mindvault_wallet_info`      | Horizon `/accounts/:key`                         | Reads USDC balance                                                     |
+| `mindvault_browse`           | `GET /resources`                                 | None                                                                   |
+| `mindvault_preview`          | `GET /resources/:id/meta`                        | None                                                                   |
+| `mindvault_register`         | `POST /publishers`                               | None                                                                   |
+| `mindvault_publish`          | `POST /resources`, `POST /verify-content` (x402) | Signs + settles USDC payment to platform wallet                        |
+| `mindvault_buy`              | `GET /resources/:id` (x402)                      | Signs + settles USDC payment to creator wallet; persists local receipt |
+| `mindvault_purchase_history` | Local `~/.mindvault/purchases.json`              | None (read-only; filter by resourceId / network)                       |
+| `mindvault_agent_status`     | `GET /agent/status`                              | None                                                                   |
 
 ---
 
