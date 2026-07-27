@@ -2035,6 +2035,110 @@ proptest! {
 
 // ── Tag removal event semantics (#362) ──────────────────────────────────────
 
+// ── set_tags validation — reject before any state mutation ──────────────────
+//
+// These tests ensure every invalid tag array is rejected by `validate_tags`
+// before the contract touches on-chain state. The acceptance criterion is:
+// "Tool rejects invalid tag arrays before RPC calls." The equivalent MCP-layer
+// rejection is covered by mcp/src/validation.test.ts and
+// mcp/src/catalogFilters.test.ts.
+
+#[test]
+fn set_tags_rejects_too_many_tags() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "manytags");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // MAX_TAGS is 8; a vector of 9 tags must be rejected.
+    let nine = tags(&env, &["a", "b", "c", "d", "e", "f", "g", "h", "i"]);
+    assert_eq!(
+        client.try_set_tags(&id, &nine),
+        Err(Ok(Error::InvalidTag)),
+        "set_tags must reject tag counts > MAX_TAGS (8)"
+    );
+    // State must be unchanged (still no tags).
+    assert_eq!(client.get(&id).tags, empty_tags(&env));
+}
+
+#[test]
+fn set_tags_accepts_exactly_max_tags() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "eighttagsok");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let eight = tags(&env, &["a", "b", "c", "d", "e", "f", "g", "h"]);
+    client.set_tags(&id, &eight);
+    assert_eq!(client.get(&id).tags.len(), 8);
+}
+
+#[test]
+fn set_tags_rejects_tag_exceeding_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "longtag");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // MAX_TAG_LEN is 32; a 33-character tag must be rejected.
+    let long_tag = String::from_str(&env, "123456789012345678901234567890123"); // 33 chars
+    let mut bad = Vec::new(&env);
+    bad.push_back(long_tag);
+    assert_eq!(
+        client.try_set_tags(&id, &bad),
+        Err(Ok(Error::InvalidTag)),
+        "set_tags must reject tags longer than MAX_TAG_LEN (32)"
+    );
+    assert_eq!(client.get(&id).tags, empty_tags(&env));
+}
+
+#[test]
+fn set_tags_accepts_tag_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "maxlentagok");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Exactly 32 characters — must be accepted.
+    let ok_tag = String::from_str(&env, "12345678901234567890123456789012"); // 32 chars
+    let mut one = Vec::new(&env);
+    one.push_back(ok_tag.clone());
+    client.set_tags(&id, &one);
+    assert_eq!(client.get(&id).tags.get(0).unwrap(), ok_tag);
+}
+
+#[test]
+fn set_tags_rejects_on_nonexistent_resource() {
+    let (env, _creator, client) = setup();
+    let ghost = String::from_str(&env, "ghost");
+    let t = tags(&env, &["x"]);
+    assert_eq!(
+        client.try_set_tags(&ghost, &t),
+        Err(Ok(Error::NotFound)),
+        "set_tags must error NotFound for an unregistered resource id"
+    );
+}
+
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
@@ -2242,6 +2346,63 @@ fn registry_info_is_stable_across_calls_and_registrations() {
     assert_eq!(
         before, after,
         "registry_info must not depend on registry contents"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// contract_version() — compact build/schema version for deployment scripts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_version_returns_crate_and_schema_version() {
+    let (env, _creator, client) = setup();
+    let v = client.contract_version();
+
+    // crate_version is baked at build time; it must be a non-empty semver string.
+    assert!(!v.crate_version.is_empty(), "crate_version must not be empty");
+    // resource_schema_version is the compile-time constant; the call must echo it.
+    assert_eq!(
+        v.resource_schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "contract_version must expose RESOURCE_SCHEMA_VERSION"
+    );
+}
+
+#[test]
+fn contract_version_matches_registry_info_fields() {
+    // contract_version is a focused subset of registry_info. Both must agree on
+    // the same crate_version/schema_version so deployment scripts can use either.
+    let (env, _creator, client) = setup();
+    let v = client.contract_version();
+    let info = client.registry_info();
+
+    assert_eq!(
+        v.crate_version, info.version,
+        "contract_version.crate_version must equal registry_info.version"
+    );
+    assert_eq!(
+        v.resource_schema_version, info.resource_schema_version,
+        "contract_version.resource_schema_version must equal registry_info.resource_schema_version"
+    );
+}
+
+#[test]
+fn contract_version_is_stable_across_calls_and_registrations() {
+    let (env, creator, client) = setup();
+    let before = client.contract_version();
+
+    client.register(
+        &creator,
+        &String::from_str(&env, "cvstability"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let after = client.contract_version();
+    assert_eq!(
+        before, after,
+        "contract_version must not change when resources are registered"
     );
 }
 
