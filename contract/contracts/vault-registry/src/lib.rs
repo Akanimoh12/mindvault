@@ -95,6 +95,22 @@ pub struct RegistryInfo {
     pub network_id: BytesN<32>,
 }
 
+/// Compact version struct returned by [`VaultRegistry::contract_version`].
+///
+/// Deployment scripts and upgrade tooling should call `contract_version`
+/// before and after a redeploy to confirm which build is running on-chain.
+/// Only `resource_schema_version` is relevant to whether callers must update
+/// their `Resource` decoding logic; a `crate_version` bump alone is safe.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContractVersion {
+    /// Cargo semver string baked in at build time (`CARGO_PKG_VERSION`).
+    pub crate_version: String,
+    /// On-chain `Resource` schema version (`RESOURCE_SCHEMA_VERSION`).
+    /// Bump this only when the `Resource` struct changes in a breaking way.
+    pub resource_schema_version: u32,
+}
+
 /// On-chain mirror of the server's off-chain verification result. Settable
 /// only by an address holding the verifier role (see `add_verifier`).
 #[contracttype]
@@ -644,6 +660,24 @@ impl VaultRegistry {
             version: String::from_str(&env, env!("CARGO_PKG_VERSION")),
             resource_schema_version: RESOURCE_SCHEMA_VERSION,
             network_id: env.ledger().network_id(),
+        }
+    }
+
+    /// Return the contract crate version and the `Resource` schema version as a
+    /// stable, compact struct. Deployment scripts and upgrade tools should call
+    /// this to confirm which version of the contract is running on-chain before
+    /// and after a redeploy, without needing to parse the full `registry_info`
+    /// response.
+    ///
+    /// Upgrade compatibility: `crate_version` is the Cargo semver string baked
+    /// in at build time (`CARGO_PKG_VERSION`). `resource_schema_version` is an
+    /// integer bumped only when the on-chain `Resource` struct changes in a way
+    /// that requires callers to update how they decode it. A change to
+    /// `crate_version` alone does not imply a schema change.
+    pub fn contract_version(env: Env) -> ContractVersion {
+        ContractVersion {
+            crate_version: String::from_str(&env, env!("CARGO_PKG_VERSION")),
+            resource_schema_version: RESOURCE_SCHEMA_VERSION,
         }
     }
 

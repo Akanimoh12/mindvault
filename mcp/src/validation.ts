@@ -35,14 +35,24 @@ import { TOOL_DEFINITIONS } from "./tools.js";
 /**
  * Argument kinds.
  *
- * - `string` — free text, trimmed; optional pattern/length constraints
- * - `enum`   — one of a fixed set of literals
- * - `flag`   — boolean, also accepting the unambiguous string/number spellings
- *              MCP clients commonly send (`"true"`, `"1"`, `"yes"`, `0`, …)
- * - `hash`   — a metadata digest in the fixed format (see metadataHash.ts),
- *              normalized to its canonical `"<algorithm>:<hex>"` form
+ * - `string`    — free text, trimmed; optional pattern/length constraints
+ * - `enum`      — one of a fixed set of literals
+ * - `flag`      — boolean, also accepting the unambiguous string/number spellings
+ *                 MCP clients commonly send (`"true"`, `"1"`, `"yes"`, `0`, …)
+ * - `hash`      — a metadata digest in the fixed format (see metadataHash.ts),
+ *                 normalized to its canonical `"<algorithm>:<hex>"` form
+ * - `tag_array` — array of discovery tags for set_tags; normalized to lowercase,
+ *                 validated against on-chain constraints (≤8 entries, each 1–32 chars,
+ *                 only `[a-z0-9_-]`). Accepts a comma-separated string as well.
+ *
+ * Normalization guidance for tag_array:
+ *   - Tags are lowercased before the on-chain call so "Finance" and "finance"
+ *     are the same tag on-chain.
+ *   - Duplicate tags (after lowercasing) are silently deduplicated.
+ *   - Leading/trailing whitespace is stripped from each tag.
+ *   - An empty array (`[]`) is valid and clears all tags from the resource.
  */
-export type ArgumentKind = "string" | "enum" | "flag" | "hash";
+export type ArgumentKind = "string" | "enum" | "flag" | "hash" | "tag_array";
 
 export interface ArgumentSpec {
   kind: ArgumentKind;
@@ -175,6 +185,11 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     passphrase: PASSPHRASE,
   },
   mindvault_metrics: { reset: { kind: "flag" } },
+  mindvault_set_tags: {
+    resourceId: RESOURCE_ID,
+    tags: { kind: "tag_array", required: true },
+    confirmMainnet: CONFIRM_MAINNET,
+  },
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -190,7 +205,8 @@ export type ValidationIssueCode =
   | "too_long"
   | "pattern_mismatch"
   | "not_in_enum"
-  | "invalid_hash";
+  | "invalid_hash"
+  | "invalid_tag_array";
 
 export interface ValidationIssue {
   field: string;
@@ -244,12 +260,98 @@ function expectation(spec: ArgumentSpec): string {
       return "a boolean (true/false)";
     case "hash":
       return METADATA_HASH_FORMAT_HINT;
+    case "tag_array":
+      return "an array of 0–8 tag strings (each 1–32 chars, lowercase letters/digits/hyphens/underscores)";
     case "string": {
       if (spec.patternHint) return spec.patternHint;
       if (spec.maxLength) return `a string of up to ${spec.maxLength} characters`;
       return "a string";
     }
   }
+}
+
+// On-chain tag constraints (must mirror contract/contracts/vault-registry/src/lib.rs).
+const MAX_TAGS = 8;
+const MAX_TAG_LEN = 32;
+const TAG_PATTERN = /^[a-z0-9_-]+$/;
+
+/**
+ * Validate and normalize a tag_array argument.
+ *
+ * Normalization applied before on-chain call:
+ *   - Each tag is trimmed and lowercased.
+ *   - Duplicate tags (after normalization) are removed.
+ *   - An empty array is accepted (clears all tags on the resource).
+ *
+ * Rejection criteria (deterministic, documented):
+ *   - Not an array (or comma-separated string that cannot be parsed).
+ *   - More than MAX_TAGS (8) entries after dedup.
+ *   - Any tag empty or longer than MAX_TAG_LEN (32) chars after trimming.
+ *   - Any tag containing characters outside `[a-z0-9_-]` after lowercasing.
+ */
+function validateTagArray(
+  field: string,
+  value: unknown,
+  issues: ValidationIssue[],
+): string[] | undefined {
+  let raw: string[];
+
+  if (Array.isArray(value)) {
+    if (!value.every((t) => typeof t === "string")) {
+      issues.push({
+        field,
+        code: "invalid_tag_array",
+        message: `${field} must be an array of strings; one or more entries are not strings.`,
+      });
+      return undefined;
+    }
+    raw = value as string[];
+  } else if (typeof value === "string") {
+    // Accept comma-separated strings for convenience (mirrors catalogFilters.ts).
+    raw = value.split(",").filter((t) => t.trim().length > 0);
+  } else {
+    issues.push({
+      field,
+      code: "invalid_tag_array",
+      message: `${field} must be an array of tag strings or a comma-separated string; received ${typeName(value)}.`,
+    });
+    return undefined;
+  }
+
+  // Normalize: trim + lowercase, then deduplicate.
+  const normalized = [...new Set(raw.map((t) => t.trim().toLowerCase()))].filter(
+    (t) => t.length > 0,
+  );
+
+  if (normalized.length > MAX_TAGS) {
+    issues.push({
+      field,
+      code: "invalid_tag_array",
+      message: `${field} must contain at most ${MAX_TAGS} tags; received ${normalized.length} (after deduplication).`,
+    });
+    return undefined;
+  }
+
+  for (const tag of normalized) {
+    if (tag.length > MAX_TAG_LEN) {
+      issues.push({
+        field,
+        code: "invalid_tag_array",
+        message: `${field} contains a tag that exceeds ${MAX_TAG_LEN} characters. Each tag must be 1–${MAX_TAG_LEN} chars.`,
+      });
+      return undefined;
+    }
+    if (!TAG_PATTERN.test(tag)) {
+      issues.push({
+        field,
+        code: "invalid_tag_array",
+        message: `${field} contains an invalid tag. Tags must use only lowercase letters, digits, hyphens, or underscores.`,
+      });
+      return undefined;
+    }
+  }
+
+  return normalized;
 }
 
 function validateFlag(
@@ -373,7 +475,7 @@ function validateHash(
 }
 
 /** Validated, normalized arguments for a tool call. */
-export type ValidatedArgs = Record<string, string | boolean>;
+export type ValidatedArgs = Record<string, string | boolean | string[]>;
 
 /**
  * Validate and normalize a tool call's arguments.
@@ -453,6 +555,11 @@ export function validateToolArgs(tool: string, rawArgs: unknown): ValidatedArgs 
         if (text !== undefined) out[field] = text;
         break;
       }
+      case "tag_array": {
+        const tagArr = validateTagArray(field, value, issues);
+        if (tagArr !== undefined) out[field] = tagArr;
+        break;
+      }
     }
   }
 
@@ -483,4 +590,13 @@ export function flag(args: ValidatedArgs, field: string): boolean {
 /** Tool names advertised by this server, sorted. */
 export function knownToolNames(): string[] {
   return TOOL_DEFINITIONS.map((tool) => tool.name).sort();
+}
+
+/** Read a validated tag array argument. Required tag_array fields are guaranteed present. */
+export function requiredTagArray(args: ValidatedArgs, field: string): string[] {
+  const value = args[field];
+  if (!Array.isArray(value)) {
+    throw new Error(`Internal validation error: ${field} was not validated as a tag_array.`);
+  }
+  return value as string[];
 }
